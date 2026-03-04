@@ -246,16 +246,17 @@ def lightgbm_train_eval(
                 'reg_lambda': 0.0 # lambda_l2
             }
         
-        # 2. High-Vol/AI (Defensive) -> Relaxed (Iter 1)
+        # 2. High-Vol/AI (Defensive) -> Relaxed (Iter 3 - Fix Feature Starvation)
         elif ticker in ['MSFT', 'META', 'NVDA', 'AVGO', 'ASML']:
             spec_params = {
-                'n_estimators': 120,    # From 80 -> 120
-                'num_leaves': 15,       # From 7 -> 15 (Slightly deeper)
-                'reg_alpha': 1.0,       # From 2.0 -> 1.0 (Less aggressive L1)
-                'reg_lambda': 2.0,      # From 5.0 -> 2.0 (Less aggressive L2)
-                'min_child_samples': 30,# From 50 -> 30 (Allow smaller leaves)
-                'colsample_bytree': 0.7 # From 0.6 -> 0.7
+                'n_estimators': 150,    # Balanced
+                'num_leaves': 20,       # Balanced
+                'reg_alpha': 0.01,      # Very light L1 to allow features
+                'reg_lambda': 0.1,      # Light L2
+                'min_child_samples': 20,# Standard
+                'colsample_bytree': 0.8 # Standard
             }
+            print(f"DEBUG: {ticker} params: {spec_params}")
             
         # 3. Stable/Other (Neutral) -> Bagging (Iter 2)
         else:
