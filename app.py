@@ -249,6 +249,16 @@ def main():
     models = _load_models()
 
     st.sidebar.title("设置")
+    
+    # Debugging: Show model timestamp
+    if models and "meta" in models:
+        gen_time = models["meta"].get("generated_at", "Unknown")
+        st.sidebar.caption(f"模型生成时间 (UTC):\n{gen_time}")
+        
+    if st.sidebar.button("清除缓存 (Reload Data)"):
+        st.cache_data.clear()
+        st.rerun()
+
     dataset = st.sidebar.radio(
         "数据集",
         options=["universe", "stocks", "assets"],
