@@ -66,16 +66,52 @@ def optimize_monte_carlo(
     return {"max_sharpe": to_result(idx_sharpe, "max_sharpe"), "min_vol": to_result(idx_vol, "min_vol")}
 
 
-def naive_forecast(returns: pd.DataFrame, lookback: int = 30, horizon: int = 7) -> pd.DataFrame:
+def naive_forecast(returns: pd.DataFrame, lookback: int = 30, horizon: int = 7) -> Dict[str, Any]:
+    """
+    Returns both regression forecast (DataFrame) and classification forecast (Dict).
+    Classification logic:
+    - Calculate mean return over lookback period.
+    - Classify this mean return into Down/Flat/Up using same threshold.
+    - Probabilities: Based on historical frequency of Down/Flat/Up in the lookback window.
+    """
     rets = returns.dropna(how="all").copy()
     if rets.empty:
-        return pd.DataFrame()
+        return {"regression": pd.DataFrame(), "classification": {}}
+    
+    # Regression part (original logic)
     tail = rets.tail(lookback)
     mu = tail.mean(skipna=True)
-    out = pd.DataFrame({"pred_daily_return": mu})
-    out["pred_7d_cum_return"] = (1.0 + out["pred_daily_return"]) ** horizon - 1.0
-    out.index.name = "symbol"
-    return out.sort_values("pred_7d_cum_return", ascending=False)
+    reg_df = pd.DataFrame({"pred_daily_return": mu})
+    reg_df["pred_7d_cum_return"] = (1.0 + reg_df["pred_daily_return"]) ** horizon - 1.0
+    reg_df.index.name = "symbol"
+    reg_df = reg_df.sort_values("pred_7d_cum_return", ascending=False)
+
+    # Classification part (New)
+    cls_res = {}
+    for sym in rets.columns:
+        s = rets[sym].dropna()
+        if len(s) < lookback:
+            continue
+        
+        # Historical window
+        hist = s.iloc[-lookback:]
+        
+        # True class (based on mean return, to match "Naive" idea of predicting mean)
+        # OR based on frequency? Let's use frequency as probability.
+        labels = _make_classification_labels(hist.values)
+        counts = np.bincount(labels, minlength=3)
+        probs = counts / len(labels)
+        
+        # Predicted class is the one with highest probability (mode)
+        pred_class = int(np.argmax(probs))
+        
+        cls_res[sym] = {
+            "pred_class": pred_class,
+            "pred_probs": [float(p) for p in probs],
+            "description": "Based on last 30 days frequency"
+        }
+
+    return {"regression": reg_df, "classification": cls_res}
 
 
 def _to_dt_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,7 +134,7 @@ def _make_features(ret_s: pd.Series) -> pd.DataFrame:
     df = pd.DataFrame({"ret": s})
     for i in range(1, 6):
         df[f"lag_{i}"] = df["ret"].shift(i)
-    for w in [5, 10, 20]:
+    for w in [5, 10, 20, 60]:
         df[f"roll_mean_{w}"] = df["ret"].rolling(w).mean()
         df[f"roll_std_{w}"] = df["ret"].rolling(w).std(ddof=1)
         df[f"mom_{w}"] = (1.0 + df["ret"]).rolling(w).apply(lambda x: float(np.prod(x) - 1.0), raw=False)
@@ -129,6 +165,19 @@ def _regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, flo
     return {"mae": mae, "rmse": rmse, "direction_acc": direction_acc}
 
 
+def _make_classification_labels(y: np.ndarray, threshold: float = 0.01) -> np.ndarray:
+    """
+    Generate 3-class labels:
+    0: Down (<-threshold)
+    1: Flat (-threshold <= y <= threshold)
+    2: Up (>threshold)
+    """
+    labels = np.zeros_like(y, dtype=int)
+    labels[y > threshold] = 2
+    labels[y < -threshold] = 0
+    labels[(y >= -threshold) & (y <= threshold)] = 1
+    return labels
+
 def lightgbm_train_eval(
     returns: pd.DataFrame,
     train_start: str,
@@ -153,6 +202,7 @@ def lightgbm_train_eval(
     models: Dict[str, Any] = {}
     metrics: Dict[str, Any] = {}
     test_pred: Dict[str, Any] = {}
+    classification_results: Dict[str, Any] = {}
 
     for sym in rets.columns:
         feat = _make_features(rets[sym])
@@ -166,18 +216,68 @@ def lightgbm_train_eval(
         X_test = test_feat.drop(columns=["y"])
         y_test = test_feat["y"].to_numpy(dtype=float)
 
-        model = lgb.LGBMRegressor(
-            n_estimators=800,
-            learning_rate=0.03,
-            num_leaves=31,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            random_state=seed,
-        )
+        # Base parameters
+        reg_params = {
+            'objective': 'regression',
+            'learning_rate': 0.02,
+            'seed': seed,
+            'verbosity': -1,
+            'n_jobs': -1
+        }
+        cls_params = {
+            'objective': 'multiclass',
+            'num_class': 3,
+            'learning_rate': 0.02,
+            'seed': seed,
+            'verbosity': -1,
+            'n_jobs': -1
+        }
+
+        # Dynamic parameter tuning based on asset type
+        ticker = sym.upper()
+        
+        # 1. Index/Trend (Aggressive)
+        if ticker in ['SPY', 'AU0']:
+            spec_params = {
+                'n_estimators': 500,
+                'num_leaves': 31,
+                'learning_rate': 0.05,
+                'reg_alpha': 0.1, # lambda_l1
+                'reg_lambda': 0.0 # lambda_l2
+            }
+        
+        # 2. High-Vol/AI (Defensive) -> Relaxed (Iter 1)
+        elif ticker in ['MSFT', 'META', 'NVDA', 'AVGO', 'ASML']:
+            spec_params = {
+                'n_estimators': 120,    # From 80 -> 120
+                'num_leaves': 15,       # From 7 -> 15 (Slightly deeper)
+                'reg_alpha': 1.0,       # From 2.0 -> 1.0 (Less aggressive L1)
+                'reg_lambda': 2.0,      # From 5.0 -> 2.0 (Less aggressive L2)
+                'min_child_samples': 30,# From 50 -> 30 (Allow smaller leaves)
+                'colsample_bytree': 0.7 # From 0.6 -> 0.7
+            }
+            
+        # 3. Stable/Other (Neutral) -> Bagging (Iter 2)
+        else:
+            spec_params = {
+                'n_estimators': 200,
+                'num_leaves': 15,
+                'reg_alpha': 0.5,
+                'min_child_samples': 20,
+                'subsample': 0.7,       # Enable bagging
+                'subsample_freq': 5     # Bagging every 5 iterations
+            }
+        
+        # Merge parameters
+        reg_params.update(spec_params)
+        cls_params.update(spec_params)
+
+        # Regression Model
+        model = lgb.LGBMRegressor(**reg_params)
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
 
-        models[sym] = {"feature_names": list(X_train.columns)}
+        models[sym] = {"feature_names": list(X_train.columns), "feature_importances": [float(x) for x in model.feature_importances_] if hasattr(model, "feature_importances_") else []}
         metrics[sym] = _regression_metrics(y_test, y_pred)
         test_pred[sym] = {
             "dates": [d.strftime("%Y-%m-%d") for d in X_test.index.to_pydatetime()],
@@ -185,7 +285,35 @@ def lightgbm_train_eval(
             "y_pred": [float(x) for x in y_pred],
         }
 
-    return {"available": True, "models": models, "metrics": metrics, "test_pred": test_pred, "train": {"start": train_start, "end": train_end}, "test": {"start": test_start, "end": test_end}}
+        # Classification Model (New)
+        y_train_cls = _make_classification_labels(y_train)
+        y_test_cls = _make_classification_labels(y_test)
+        
+        cls_model = lgb.LGBMClassifier(**cls_params)
+        cls_model.fit(X_train, y_train_cls)
+        y_pred_cls = cls_model.predict(X_test)
+        y_pred_proba = cls_model.predict_proba(X_test)
+        
+        # Calculate accuracy for classification
+        acc = float(np.mean(y_pred_cls == y_test_cls))
+        
+        classification_results[sym] = {
+            "accuracy": acc,
+            "pred_classes": [int(x) for x in y_pred_cls],
+            "pred_probs": [[float(p) for p in probs] for probs in y_pred_proba],
+            "dates": [d.strftime("%Y-%m-%d") for d in X_test.index.to_pydatetime()],
+            "true_classes": [int(x) for x in y_test_cls]
+        }
+
+    return {
+        "available": True, 
+        "models": models, 
+        "metrics": metrics, 
+        "test_pred": test_pred, 
+        "classification": classification_results,
+        "train": {"start": train_start, "end": train_end}, 
+        "test": {"start": test_start, "end": test_end}
+    }
 
 
 def lightgbm_forecast_horizon(
@@ -224,9 +352,12 @@ def lightgbm_forecast_horizon(
             X_train = train_feat.drop(columns=["y"])
             y_train = train_feat["y"].to_numpy(dtype=float)
             model = lgb.LGBMRegressor(
-                n_estimators=800,
-                learning_rate=0.03,
+                n_estimators=1000,
+                learning_rate=0.01,
                 num_leaves=31,
+                min_child_samples=20,
+                reg_alpha=0.1,
+                reg_lambda=0.1,
                 subsample=0.9,
                 colsample_bytree=0.9,
                 random_state=42,
@@ -276,13 +407,14 @@ def _weights_arrays(weights: Dict[str, float], symbols: Optional[list] = None) -
     return {"symbols": syms, "weights": [float(weights.get(s, 0.0)) for s in syms]}
 
 
-def _mu_from_naive(naive_df: pd.DataFrame, symbols: list) -> np.ndarray:
-    if naive_df is None or naive_df.empty:
+def _mu_from_naive(naive_res: Dict[str, Any], symbols: list) -> np.ndarray:
+    reg_df = naive_res.get("regression", pd.DataFrame())
+    if reg_df.empty:
         return np.zeros(len(symbols), dtype=float)
-    s = naive_df["pred_daily_return"] if "pred_daily_return" in naive_df.columns else pd.Series(dtype=float)
-    if naive_df.index.name != "symbol" and "symbol" in naive_df.columns:
-        naive_df = naive_df.set_index("symbol")
-        s = naive_df["pred_daily_return"]
+    s = reg_df["pred_daily_return"] if "pred_daily_return" in reg_df.columns else pd.Series(dtype=float)
+    if reg_df.index.name != "symbol" and "symbol" in reg_df.columns:
+        reg_df = reg_df.set_index("symbol")
+        s = reg_df["pred_daily_return"]
     return np.asarray([float(s.get(sym, 0.0)) for sym in symbols], dtype=float)
 
 
@@ -343,17 +475,20 @@ def run_models(json_path: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
         mu_assets_source = "naive"
     else:
         mu_assets_source = "lightgbm"
+    
     if mu_stocks is None:
         mu_stocks = _mu_from_naive(stocks_naive, stocks_syms)
         mu_stocks_source = "naive"
     else:
         mu_stocks_source = "lightgbm"
+    
     if mu_universe is None:
         mu_universe = _mu_from_naive(universe_naive, universe_syms)
         mu_universe_source = "naive"
     else:
         mu_universe_source = "lightgbm"
 
+    # Optimization using regression results
     assets_opt = optimize_monte_carlo(ret_assets_train, mu_daily=mu_assets, n_samples=50000, seed=7)
     stocks_opt = optimize_monte_carlo(ret_stocks_train, mu_daily=mu_stocks, n_samples=150000, seed=11)
     universe_opt = optimize_monte_carlo(ret_universe_train, mu_daily=mu_universe, n_samples=200000, seed=19)
@@ -385,14 +520,16 @@ def run_models(json_path: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
             "test_end": test_end,
         },
         "assets": {
-            "naive": assets_naive.reset_index().to_dict(orient="records"),
+            "naive": assets_naive.get("regression", pd.DataFrame()).reset_index().to_dict(orient="records"),
+            "naive_classification": assets_naive.get("classification", {}),
             "opt": {k: vars(v) for k, v in assets_opt.items()},
             "lightgbm": lgb_assets,
             "lightgbm_forecast": fc_assets,
             "mu_source": mu_assets_source,
         },
         "stocks": {
-            "naive": stocks_naive.reset_index().to_dict(orient="records"),
+            "naive": stocks_naive.get("regression", pd.DataFrame()).reset_index().to_dict(orient="records"),
+            "naive_classification": stocks_naive.get("classification", {}),
             "opt": {k: vars(v) for k, v in stocks_opt.items()},
             "lightgbm": lgb_stocks,
             "lightgbm_forecast": fc_stocks,
@@ -400,7 +537,8 @@ def run_models(json_path: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
             "derived_from_universe": stocks_derived,
         },
         "universe": {
-            "naive": universe_naive.reset_index().to_dict(orient="records"),
+            "naive": universe_naive.get("regression", pd.DataFrame()).reset_index().to_dict(orient="records"),
+            "naive_classification": universe_naive.get("classification", {}),
             "opt": {k: vars(v) for k, v in universe_opt.items()},
             "lightgbm": lgb_universe,
             "lightgbm_forecast": fc_universe,
@@ -414,8 +552,8 @@ def run_models(json_path: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
     with open(os.path.join(out_dir, "models.json"), "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    assets_naive.to_csv(os.path.join(out_dir, "assets_naive.csv"), encoding="utf-8-sig")
-    stocks_naive.to_csv(os.path.join(out_dir, "stocks_naive.csv"), encoding="utf-8-sig")
-    universe_naive.to_csv(os.path.join(out_dir, "universe_naive.csv"), encoding="utf-8-sig")
+    assets_naive.get("regression", pd.DataFrame()).to_csv(os.path.join(out_dir, "assets_naive.csv"), encoding="utf-8-sig")
+    stocks_naive.get("regression", pd.DataFrame()).to_csv(os.path.join(out_dir, "stocks_naive.csv"), encoding="utf-8-sig")
+    universe_naive.get("regression", pd.DataFrame()).to_csv(os.path.join(out_dir, "universe_naive.csv"), encoding="utf-8-sig")
 
     return payload

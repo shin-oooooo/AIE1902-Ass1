@@ -11,8 +11,8 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class FetchConfig:
-    start: str = "2024-11-01"
-    end: str = "2026-01-31"
+    start: str = "2021-01-01"
+    end: str = "2026-02-28"
     zscore_threshold: float = 3.0
 
 
@@ -240,10 +240,10 @@ def _universe_symbols() -> List[str]:
 
 
 def _train_test_meta(cfg: FetchConfig) -> Dict[str, str]:
-    train_start = "2024-11-01"
-    train_end = "2025-11-30"
-    test_start = "2025-12-01"
-    test_end = "2026-01-31"
+    train_start = "2021-01-01"
+    train_end = "2025-01-15"
+    test_start = "2025-01-16"
+    test_end = "2025-01-31"
     return {
         "train_start": max(cfg.start, train_start),
         "train_end": min(cfg.end, train_end),
@@ -365,6 +365,7 @@ def main():
     parser.add_argument("--end", type=str, default=FetchConfig.end)
     parser.add_argument("--z", type=float, default=FetchConfig.zscore_threshold)
     parser.add_argument("--symbol", type=str, default="")
+    parser.add_argument("--all", action="store_true", help="Download all symbols in universe")
     parser.add_argument("--kind", type=str, choices=["asset", "stock"], default="")
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()
@@ -380,14 +381,22 @@ def main():
         payload = _load_payload(json_path, cfg)
 
     assets, stocks = _default_symbols()
-    sym = args.symbol.strip().upper()
-    kind = args.kind
-    if not sym:
-        raise RuntimeError("必须提供 --symbol")
-    if not kind:
-        kind = "asset" if sym in set(assets) else "stock"
+    
+    if args.all:
+        target_symbols = _universe_symbols()
+    else:
+        sym = args.symbol.strip().upper()
+        if not sym:
+            raise RuntimeError("必须提供 --symbol 或 --all")
+        target_symbols = [sym]
 
-    payload = download_one(cfg, sym, kind, payload)
+    for sym in target_symbols:
+        kind = args.kind
+        if not kind:
+            kind = "asset" if sym in set(assets) else "stock"
+        print(f"Downloading {sym}...")
+        payload = download_one(cfg, sym, kind, payload)
+    
     _write_outputs(out_dir, payload)
 
 
