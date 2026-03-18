@@ -15,6 +15,15 @@ if _THIS_DIR not in sys.path:
 
 from ass1_core import annual_metrics, corr_matrix, daily_returns, gaussian_kde_1d, load_bundle, normalize_prices, rolling_volatility
 
+# Kronos integration
+try:
+    from kronos_predictor import kronos_forecast, KRONOS_AVAILABLE, run_kronos_optimization
+except Exception as e:
+    st.warning(f"Kronos 导入失败: {e}")
+    kronos_forecast = None
+    KRONOS_AVAILABLE = False
+    run_kronos_optimization = None
+
 
 def _ensure_plotly():
     import plotly.express as px
@@ -265,6 +274,18 @@ def main():
         index=0,
         format_func=lambda x: "12种资产（10股票+SPY+AU0）" if x == "universe" else ("10只股票" if x == "stocks" else "SPY+AU0"),
     )
+
+    # Model selection
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("预测模型")
+    model_options = ["Naive + LightGBM", "Naive", "LightGBM"]
+
+    selected_model = st.sidebar.radio(
+        "选择模型",
+        options=model_options,
+        index=0
+    )
+
     risk = st.sidebar.select_slider("风险偏好", options=["低", "中", "高"], value="中")
     close = data["close_universe"] if dataset == "universe" else (data["close_stocks"] if dataset == "stocks" else data["close_assets"])
     symbols_all = list(close.columns)
@@ -272,210 +293,219 @@ def main():
     close_sel = _subset_close(close, selected)
     ret_sel = daily_returns(close_sel).dropna(how="all")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["数据看板", "风险分析", "预测建议", "AI 可解释性", "回测验证"])
+    tab_portfolio, tab_kronos = st.tabs(["组合建议", "Kronos预测"])
 
-    with tab1:
-        st.subheader("基础信息")
-        st.write(data["meta"])
-        st.subheader("价格数据（清洗后）")
-        st.dataframe(close_sel.tail(20))
-        st.subheader("核心统计指标（年化）")
-        st.dataframe(annual_metrics(ret_sel))
+    # ========== 组合建议 Tab (包含5个子标签页) ==========
+    with tab_portfolio:
+        sub_tab1, sub_tab2, sub_tab3, sub_tab4, sub_tab5 = st.tabs(["数据看板", "风险分析", "预测建议", "AI 可解释性", "回测验证"])
 
-    with tab2:
-        st.subheader("相关性矩阵与热力图")
-        corr = corr_matrix(ret_sel)
-        st.dataframe(corr)
-        fig = _heatmap_fig(corr, "Correlation Heatmap")
-        st.plotly_chart(fig, use_container_width=True)
-        _fig_to_download(fig, f"{dataset}_corr_heatmap_selected.html")
+        with sub_tab1:
+            st.subheader("基础信息")
+            st.write(data["meta"])
+            st.subheader("价格数据（清洗后）")
+            st.dataframe(close_sel.tail(20))
+            st.subheader("核心统计指标（年化）")
+            st.dataframe(annual_metrics(ret_sel))
 
-        st.subheader("归一化价格走势")
-        fig2 = _price_fig(close_sel, "Normalized Prices")
-        st.plotly_chart(fig2, use_container_width=True)
-        _fig_to_download(fig2, f"{dataset}_prices_selected.html")
+        with sub_tab2:
+            st.subheader("相关性矩阵与热力图")
+            corr = corr_matrix(ret_sel)
+            st.dataframe(corr)
+            fig = _heatmap_fig(corr, "Correlation Heatmap")
+            st.plotly_chart(fig, use_container_width=True)
+            _fig_to_download(fig, f"{dataset}_corr_heatmap_selected.html")
 
-        st.subheader("收益率分布 KDE")
-        fig3 = _kde_fig(ret_sel, "Returns KDE")
-        st.plotly_chart(fig3, use_container_width=True)
-        _fig_to_download(fig3, f"{dataset}_returns_kde_selected.html")
+            st.subheader("归一化价格走势")
+            fig2 = _price_fig(close_sel, "Normalized Prices")
+            st.plotly_chart(fig2, use_container_width=True)
+            _fig_to_download(fig2, f"{dataset}_prices_selected.html")
 
-        st.subheader("30天滚动波动率（年化）")
-        fig4 = _rolling_vol_fig(ret_sel, "Rolling Volatility (30D)")
-        st.plotly_chart(fig4, use_container_width=True)
-        _fig_to_download(fig4, f"{dataset}_rolling_vol_selected.html")
+            st.subheader("收益率分布 KDE")
+            fig3 = _kde_fig(ret_sel, "Returns KDE")
+            st.plotly_chart(fig3, use_container_width=True)
+            _fig_to_download(fig3, f"{dataset}_returns_kde_selected.html")
 
-        st.subheader("夏普比率图（年化收益率 vs 年化波动率）")
-        metrics = annual_metrics(ret_sel)
-        fig5 = _sharpe_fig(metrics, "Sharpe Ratio Plot")
-        st.plotly_chart(fig5, use_container_width=True)
-        _fig_to_download(fig5, f"{dataset}_sharpe_plot_selected.html")
+            st.subheader("30天滚动波动率（年化）")
+            fig4 = _rolling_vol_fig(ret_sel, "Rolling Volatility (30D)")
+            st.plotly_chart(fig4, use_container_width=True)
+            _fig_to_download(fig4, f"{dataset}_rolling_vol_selected.html")
 
-    def _classify_value(val: float, threshold: float = 0.01) -> int:
-        if val > threshold: return 2
-        if val < -threshold: return 0
-        return 1
+            st.subheader("夏普比率图（年化收益率 vs 年化波动率）")
+            metrics = annual_metrics(ret_sel)
+            fig5 = _sharpe_fig(metrics, "Sharpe Ratio Plot")
+            st.plotly_chart(fig5, use_container_width=True)
+            _fig_to_download(fig5, f"{dataset}_sharpe_plot_selected.html")
 
-    def _naive_rolling_classify(close_series: pd.Series, window: int = 30) -> pd.Series:
-        ret = close_series.pct_change()
-        roll_mean = ret.rolling(window=window).mean().shift(1) # shift 1 to avoid lookahead
-        return roll_mean.apply(lambda x: _classify_value(x))
+        def _classify_value(val: float, threshold: float = 0.01) -> int:
+            if val > threshold: return 2
+            if val < -threshold: return 0
+            return 1
 
-    with tab3:
-        st.subheader("预测与配置建议")
-        
-        granularity = st.radio(
-            "预测颗粒度 (Prediction Granularity)",
-            options=["日收益率 (回归)", "趋势三分类 (分类)"],
-            horizontal=True
-        )
+        def _naive_rolling_classify(close_series: pd.Series, window: int = 30) -> pd.Series:
+            ret = close_series.pct_change()
+            roll_mean = ret.rolling(window=window).mean().shift(1) # shift 1 to avoid lookahead
+            return roll_mean.apply(lambda x: _classify_value(x))
 
-        lgb = models.get(dataset, {}).get("lightgbm", {})
-        naive_cls_data = models.get(dataset, {}).get("naive_classification", {})
-        
-        if granularity == "日收益率 (回归)":
-            st.markdown("**Naive 预测（过去30天均值→未来7天）**")
-            naive_rows = models.get(dataset, {}).get("naive", [])
-            naive_df = pd.DataFrame(naive_rows)
-            if not naive_df.empty and "symbol" in naive_df.columns:
-                naive_df = naive_df.set_index("symbol").loc[[s for s in selected if s in set(naive_df["symbol"])]].reset_index()
-            st.dataframe(naive_df)
+        with sub_tab3:
+            st.subheader("预测与配置建议")
 
-            st.markdown("**LightGBM 回归预测（测试集表现）**")
-            if isinstance(lgb, dict) and lgb.get("available", False):
-                m = lgb.get("metrics", {})
-                rows = [{"symbol": k, **v} for k, v in m.items() if isinstance(v, dict)]
-                lgb_df = pd.DataFrame(rows)
-                if not lgb_df.empty:
-                    lgb_df = lgb_df.set_index("symbol").loc[[s for s in selected if s in set(lgb_df["symbol"])]].reset_index()
-                st.dataframe(lgb_df)
-            else:
-                st.write(f"LightGBM 未启用：{lgb.get('error','')}")
+            granularity = st.radio(
+                "预测颗粒度 (Prediction Granularity)",
+                options=["日收益率 (回归)", "趋势三分类 (分类)"],
+                horizontal=True
+            )
 
-            st.subheader("最终权重（饼图 + 数组格式）")
-            w_base = _recommend_weights(models, dataset, risk)
-            w = _renorm_subset(w_base, selected)
-            figw = _weight_fig(w, f"Weights ({dataset}, {risk}风险)")
-            st.plotly_chart(figw, use_container_width=True)
-            _fig_to_download(figw, f"{dataset}_weights_{risk}_selected.html")
+            # Only show traditional models if selected
+            show_naive = selected_model in ["Naive", "Naive + LightGBM", "全部对比"]
+            show_lgb = selected_model in ["LightGBM", "Naive + LightGBM", "全部对比"]
 
-            order = [s for s in symbols_all if s in set(selected)]
-            st.code(_weights_array_text(order, w), language="text")
+            lgb = models.get(dataset, {}).get("lightgbm", {}) if show_lgb else {}
+            naive_cls_data = models.get(dataset, {}).get("naive_classification", {}) if show_naive else {}
 
-            if dataset == "universe":
-                st.code(_weights_array_text(["SPY", "AU0"], w), language="text")
-                st.code(_weights_array_text([s for s in order if s not in ["SPY", "AU0"]], w), language="text")
+            if granularity == "日收益率 (回归)":
+                st.markdown("**Naive 预测（过去30天均值→未来7天）**")
+                naive_rows = models.get(dataset, {}).get("naive", [])
+                naive_df = pd.DataFrame(naive_rows)
+                if not naive_df.empty and "symbol" in naive_df.columns:
+                    naive_df = naive_df.set_index("symbol").loc[[s for s in selected if s in set(naive_df["symbol"])]].reset_index()
+                st.dataframe(naive_df)
 
-        else:  # Classification Mode
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### LightGBM 预测")
+                st.markdown("**LightGBM 回归预测（测试集表现）**")
+                if isinstance(lgb, dict) and lgb.get("available", False):
+                    m = lgb.get("metrics", {})
+                    rows = [{"symbol": k, **v} for k, v in m.items() if isinstance(v, dict)]
+                    lgb_df = pd.DataFrame(rows)
+                    if not lgb_df.empty:
+                        lgb_df = lgb_df.set_index("symbol").loc[[s for s in selected if s in set(lgb_df["symbol"])]].reset_index()
+                    st.dataframe(lgb_df)
+                else:
+                    st.write(f"LightGBM 未启用：{lgb.get('error','')}")
+
+                st.subheader("最终权重（饼图 + 数组格式）")
+                w_base = _recommend_weights(models, dataset, risk)
+                w = _renorm_subset(w_base, selected)
+                figw = _weight_fig(w, f"Weights ({dataset}, {risk}风险)")
+                st.plotly_chart(figw, use_container_width=True)
+                _fig_to_download(figw, f"{dataset}_weights_{risk}_selected.html")
+
+                order = [s for s in symbols_all if s in set(selected)]
+                st.code(_weights_array_text(order, w), language="text")
+
+                if dataset == "universe":
+                    st.code(_weights_array_text(["SPY", "AU0"], w), language="text")
+                    st.code(_weights_array_text([s for s in order if s not in ["SPY", "AU0"]], w), language="text")
+
+            else:  # Classification Mode
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("### LightGBM 预测")
+                    if isinstance(lgb, dict) and lgb.get("available", False):
+                        cls_res = lgb.get("classification", {})
+                        if cls_res:
+                            cls_rows = []
+                            for sym, res in cls_res.items():
+                                if sym not in selected: continue
+                                last_class = res["pred_classes"][-1]
+                                probs = res["pred_probs"][-1]
+                                cls_label = ["大跌", "震荡", "大涨"][last_class]
+                                cls_rows.append({
+                                    "Symbol": sym, "Pred": cls_label,
+                                    "Prob(Up)": f"{probs[2]:.1%}", "Acc": f"{res['accuracy']:.1%}"
+                                })
+                            st.dataframe(pd.DataFrame(cls_rows))
+                        else:
+                            st.warning("LightGBM分类数据缺失")
+                    else:
+                        st.warning("LightGBM不可用")
+
+                with col2:
+                    st.markdown("### Naive 预测")
+                    if naive_cls_data:
+                        n_rows = []
+                        for sym, res in naive_cls_data.items():
+                            if sym not in selected: continue
+                            pred = res.get("pred_class", 1)
+                            probs = res.get("pred_probs", [0,0,0])
+                            label = ["大跌", "震荡", "大涨"][pred]
+                            n_rows.append({
+                                "Symbol": sym, "Pred": label,
+                                "Prob(Up)": f"{probs[2]:.1%}", "Desc": res.get("description", "")
+                            })
+                        st.dataframe(pd.DataFrame(n_rows))
+                    else:
+                        st.warning("Naive分类数据缺失")
+
+                st.markdown("---")
+
+                st.subheader("模型与现实情况对比 (测试集可视化)")
+
+                viz_sym = st.selectbox("选择资产进行对比", options=selected, key="cls_viz_sym")
+
+                # Prepare data for visualization
                 if isinstance(lgb, dict) and lgb.get("available", False):
                     cls_res = lgb.get("classification", {})
-                    if cls_res:
-                        cls_rows = []
-                        for sym, res in cls_res.items():
-                            if sym not in selected: continue
-                            last_class = res["pred_classes"][-1]
-                            probs = res["pred_probs"][-1]
-                            cls_label = ["大跌", "震荡", "大涨"][last_class]
-                            cls_rows.append({
-                                "Symbol": sym, "Pred": cls_label,
-                                "Prob(Up)": f"{probs[2]:.1%}", "Acc": f"{res['accuracy']:.1%}"
-                            })
-                        st.dataframe(pd.DataFrame(cls_rows))
-                    else:
-                        st.warning("LightGBM分类数据缺失")
-                else:
-                    st.warning("LightGBM不可用")
+                    lgb_sym_data = cls_res.get(viz_sym, {})
 
-            with col2:
-                st.markdown("### Naive 预测")
-                if naive_cls_data:
-                    n_rows = []
-                    for sym, res in naive_cls_data.items():
-                        if sym not in selected: continue
-                        pred = res.get("pred_class", 1)
-                        probs = res.get("pred_probs", [0,0,0])
-                        label = ["大跌", "震荡", "大涨"][pred]
-                        n_rows.append({
-                            "Symbol": sym, "Pred": label,
-                            "Prob(Up)": f"{probs[2]:.1%}", "Desc": res.get("description", "")
-                        })
-                    st.dataframe(pd.DataFrame(n_rows))
-                else:
-                    st.warning("Naive分类数据缺失")
+                    if lgb_sym_data:
+                        dates = lgb_sym_data.get("dates", [])
+                        true_cls = lgb_sym_data.get("true_classes", [])
+                        lgb_pred = lgb_sym_data.get("pred_classes", [])
 
-            st.markdown("---")
-            st.subheader("模型与现实情况对比 (测试集可视化)")
-            
-            viz_sym = st.selectbox("选择资产进行对比", options=selected, key="cls_viz_sym")
-            
-            # Prepare data for visualization
-            if isinstance(lgb, dict) and lgb.get("available", False):
-                cls_res = lgb.get("classification", {})
-                lgb_sym_data = cls_res.get(viz_sym, {})
-                
-                if lgb_sym_data:
-                    dates = lgb_sym_data.get("dates", [])
-                    true_cls = lgb_sym_data.get("true_classes", [])
-                    lgb_pred = lgb_sym_data.get("pred_classes", [])
-                    
-                    # Compute Naive predictions on the same dates
-                    # Use close prices from data['close_universe/stocks/assets']
-                    close_df = close_sel[viz_sym] if viz_sym in close_sel.columns else None
-                    if close_df is not None:
-                        naive_series = _naive_rolling_classify(close_df)
-                        # Filter to match test dates
-                        naive_pred = []
-                        valid_dates = []
-                        valid_true = []
-                        valid_lgb = []
-                        
-                        for i, d_str in enumerate(dates):
-                            try:
-                                d = pd.to_datetime(d_str)
-                                if d in naive_series.index:
-                                    naive_pred.append(naive_series.loc[d])
-                                    valid_dates.append(d_str)
-                                    valid_true.append(true_cls[i])
-                                    valid_lgb.append(lgb_pred[i])
-                            except:
-                                continue
-                        
-                        if valid_dates:
-                            # Create heatmap data
-                            # Map classes to values: 0->-1, 1->0, 2->1 for color scale
-                            map_val = {0: -1, 1: 0, 2: 1}
-                            
-                            fig_heat = go.Figure(data=go.Heatmap(
-                                z=[
-                                    [map_val[x] for x in valid_true],
-                                    [map_val[x] for x in valid_lgb],
-                                    [map_val[x] for x in naive_pred]
-                                ],
-                                x=valid_dates,
-                                y=['Real (真实)', 'LightGBM', 'Naive'],
-                                colorscale=[[0, 'red'], [0.5, 'lightgray'], [1, 'green']],
-                                showscale=False
-                            ))
-                            fig_heat.update_layout(
-                                title=f"{viz_sym} 分类预测对比 (绿=涨, 红=跌, 灰=震荡)",
-                                height=300
-                            )
-                            st.plotly_chart(fig_heat, use_container_width=True)
-                            
-                            # Confusion Matrix for LightGBM
-                            st.markdown("**混淆矩阵 (LightGBM vs Real)**")
-                            from sklearn.metrics import confusion_matrix
-                            cm = confusion_matrix(valid_true, valid_lgb, labels=[0, 1, 2])
-                            cm_df = pd.DataFrame(cm, index=["Real:跌", "Real:平", "Real:涨"], columns=["Pred:跌", "Pred:平", "Pred:涨"])
-                            st.table(cm_df)
+                        # Compute Naive predictions on the same dates
+                        # Use close prices from data['close_universe/stocks/assets']
+                        close_df = close_sel[viz_sym] if viz_sym in close_sel.columns else None
+                        if close_df is not None:
+                            naive_series = _naive_rolling_classify(close_df)
+                            # Filter to match test dates
+                            naive_pred = []
+                            valid_dates = []
+                            valid_true = []
+                            valid_lgb = []
 
-            st.info("注：分类阈值为 +/- 1%。")
+                            for i, d_str in enumerate(dates):
+                                try:
+                                    d = pd.to_datetime(d_str)
+                                    if d in naive_series.index:
+                                        naive_pred.append(naive_series.loc[d])
+                                        valid_dates.append(d_str)
+                                        valid_true.append(true_cls[i])
+                                        valid_lgb.append(lgb_pred[i])
+                                except:
+                                    continue
 
-        st.subheader("文字建议（推导全过程）")
+                            if valid_dates:
+                                # Create heatmap data
+                                # Map classes to values: 0->-1, 1->0, 2->1 for color scale
+                                map_val = {0: -1, 1: 0, 2: 1}
+
+                                fig_heat = go.Figure(data=go.Heatmap(
+                                    z=[
+                                        [map_val[x] for x in valid_true],
+                                        [map_val[x] for x in valid_lgb],
+                                        [map_val[x] for x in naive_pred]
+                                    ],
+                                    x=valid_dates,
+                                    y=['Real (真实)', 'LightGBM', 'Naive'],
+                                    colorscale=[[0, 'red'], [0.5, 'lightgray'], [1, 'green']],
+                                    showscale=False
+                                ))
+                                fig_heat.update_layout(
+                                    title=f"{viz_sym} 分类预测对比 (绿=涨, 红=跌, 灰=震荡)",
+                                    height=300
+                                )
+                                st.plotly_chart(fig_heat, use_container_width=True)
+
+                                # Confusion Matrix for LightGBM
+                                st.markdown("**混淆矩阵 (LightGBM vs Real)**")
+                                from sklearn.metrics import confusion_matrix
+                                cm = confusion_matrix(valid_true, valid_lgb, labels=[0, 1, 2])
+                                cm_df = pd.DataFrame(cm, index=["Real:跌", "Real:平", "Real:涨"], columns=["Pred:跌", "Pred:平", "Pred:涨"])
+                                st.table(cm_df)
+
+                st.info("注：分类阈值为 +/- 1%。")
+
+            st.subheader("文字建议（推导全过程）")
         metrics = annual_metrics(ret_sel)
         corr = corr_matrix(ret_sel)
         # Pass empty weights if classification mode to avoid confusion in text generation, 
@@ -484,20 +514,20 @@ def main():
         w = _renorm_subset(w_base, selected)
         st.markdown(_build_explain(dataset, risk, selected, data["raw"], metrics, corr, models, w), unsafe_allow_html=True)
 
-    with tab4:
-        st.subheader("LightGBM 特征重要性分析")
-        lgb_data = models.get(dataset, {}).get("lightgbm", {})
-        
-        if not lgb_data.get("available", False):
-            st.warning("LightGBM 模型未启用，无法展示特征重要性。")
-        else:
-            # Dropdown to select symbol
-            feat_sym = st.selectbox("选择资产查看特征贡献", options=selected, key="feat_imp_sym")
-            
-            # Get feature importance for selected symbol
-            fi_data = lgb_data.get("models", {}).get(feat_sym, {})
-            names = fi_data.get("feature_names", [])
-            importance = fi_data.get("feature_importances", [])
+        with sub_tab4:
+            st.subheader("LightGBM 特征重要性分析")
+            lgb_data = models.get(dataset, {}).get("lightgbm", {})
+
+            if not lgb_data.get("available", False):
+                st.warning("LightGBM 模型未启用，无法展示特征重要性。")
+            else:
+                # Dropdown to select symbol
+                feat_sym = st.selectbox("选择资产查看特征贡献", options=selected, key="feat_imp_sym")
+
+                # Get feature importance for selected symbol
+                fi_data = lgb_data.get("models", {}).get(feat_sym, {})
+                names = fi_data.get("feature_names", [])
+                importance = fi_data.get("feature_importances", [])
             
             if names and importance:
                 fi_df = pd.DataFrame({"Feature": names, "Importance": importance})
@@ -523,69 +553,460 @@ def main():
             else:
                 st.info(f"未找到 {feat_sym} 的特征重要性数据。")
 
-    with tab5:
-        st.subheader("模型回测验证 (2025-02-01 ~ 2025-02-08)")
-        
-        # Load backtest results
-        backtest_path = os.path.join(_paths()[0], "backtest_results.json")
-        if os.path.exists(backtest_path):
-            with open(backtest_path, "r", encoding="utf-8") as f:
-                bt_results = json.load(f)
-            
-            scope_res = bt_results.get(dataset, {})
-            dates = scope_res.get("dates", [])
-            comparison = scope_res.get("comparison", {})
-            
-            if not dates:
-                st.warning("回测数据为空，请检查 analyze_backtest.py 是否成功运行。")
-            else:
-                bt_sym = st.selectbox("选择资产查看回测详情", options=selected, key="bt_sym")
-                
-                comp_data = comparison.get(bt_sym, {})
-                if comp_data:
-                    # Metrics Table
-                    nm = comp_data.get("naive_metrics", {})
-                    lm = comp_data.get("lgb_metrics", {})
-                    
-                    met_df = pd.DataFrame({
-                        "Metric": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "累计收益差"],
-                        "Naive": [nm.get("mae"), nm.get("rmse"), nm.get("cum_diff")],
-                        "LightGBM": [lm.get("mae"), lm.get("rmse"), lm.get("cum_diff")]
-                    })
-                    st.table(met_df)
-                    
-                    # Plot
-                    real_vals = comp_data.get("real", [])
-                    naive_vals = comp_data.get("naive_pred", [])
-                    lgb_vals = comp_data.get("lgb_pred", [])
-                    
-                    # Cumulative Return
-                    real_cum = [np.prod(1 + np.array(real_vals[:i+1])) - 1 for i in range(len(real_vals))]
-                    naive_cum = [np.prod(1 + np.array(naive_vals[:i+1])) - 1 for i in range(len(naive_vals))]
-                    lgb_cum = [np.prod(1 + np.array(lgb_vals[:i+1])) - 1 for i in range(len(lgb_vals))]
-                    
-                    chart_df = pd.DataFrame({
-                        "Date": dates,
-                        "Real": real_cum,
-                        "Naive": naive_cum,
-                        "LightGBM": lgb_cum
-                    })
-                    
-                    fig_bt = px.line(chart_df, x="Date", y=["Real", "Naive", "LightGBM"], 
-                                     title=f"{bt_sym} 累计收益回测对比 (Cumulative Return)",
-                                     markers=True)
-                    st.plotly_chart(fig_bt, use_container_width=True)
-                    
-                    st.markdown("""
-                    **图表说明：**
-                    - **Real (蓝色)**: 真实发生的市场累计收益。
-                    - **Naive (红色)**: 基于过去30天均值的线性预测。
-                    - **LightGBM (绿色)**: 机器学习模型的动态预测。
-                    """)
+        with sub_tab5:
+            st.subheader("模型回测验证 (2025-02-01 ~ 2025-02-08)")
+
+            # Load backtest results
+            backtest_path = os.path.join(_paths()[0], "backtest_results.json")
+            if os.path.exists(backtest_path):
+                with open(backtest_path, "r", encoding="utf-8") as f:
+                    bt_results = json.load(f)
+
+                scope_res = bt_results.get(dataset, {})
+                dates = scope_res.get("dates", [])
+                comparison = scope_res.get("comparison", {})
+
+                if not dates:
+                    st.warning("回测数据为空，请检查 analyze_backtest.py 是否成功运行。")
                 else:
-                    st.info(f"未找到 {bt_sym} 的回测数据。")
+                    bt_sym = st.selectbox("选择资产查看回测详情", options=selected, key="bt_sym")
+
+                    comp_data = comparison.get(bt_sym, {})
+                    if comp_data:
+                        # Metrics Table
+                        nm = comp_data.get("naive_metrics", {})
+                        lm = comp_data.get("lgb_metrics", {})
+
+                        met_df = pd.DataFrame({
+                            "Metric": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "累计收益差"],
+                            "Naive": [nm.get("mae"), nm.get("rmse"), nm.get("cum_diff")],
+                            "LightGBM": [lm.get("mae"), lm.get("rmse"), lm.get("cum_diff")]
+                        })
+                        st.table(met_df)
+
+                        # Plot
+                        real_vals = comp_data.get("real", [])
+                        naive_vals = comp_data.get("naive_pred", [])
+                        lgb_vals = comp_data.get("lgb_pred", [])
+
+                        # Cumulative Return
+                        real_cum = [np.prod(1 + np.array(real_vals[:i+1])) - 1 for i in range(len(real_vals))]
+                        naive_cum = [np.prod(1 + np.array(naive_vals[:i+1])) - 1 for i in range(len(naive_vals))]
+                        lgb_cum = [np.prod(1 + np.array(lgb_vals[:i+1])) - 1 for i in range(len(lgb_vals))]
+
+                        chart_df = pd.DataFrame({
+                            "Date": dates,
+                            "实际": real_cum,
+                            "Naive": naive_cum,
+                            "LightGBM": lgb_cum
+                        })
+
+                        fig_bt = px.line(chart_df, x="Date", y=["实际", "Naive", "LightGBM"],
+                                         title=f"{bt_sym} 累计收益回测对比 (Cumulative Return)",
+                                         markers=True)
+                        st.plotly_chart(fig_bt, use_container_width=True)
+
+                        st.markdown("""
+                        **图表说明：**
+                        - **实际 (蓝色)**: 真实发生的市场累计收益。
+                        - **Naive (红色)**: 基于过去30天均值的线性预测。
+                        - **LightGBM (绿色)**: 机器学习模型的动态预测。
+                        """)
+                    else:
+                        st.info(f"未找到 {bt_sym} 的回测数据。")
+
+                # ========== 组合层面回测 ==========
+                st.markdown("---")
+                st.subheader("📊 整个组合的回测验证")
+
+                portfolio_data = scope_res.get("portfolio", {})
+                if portfolio_data:
+                    # 选择风险偏好
+                    risk_profile_map = {"低": "min_vol", "高": "max_sharpe", "中": "min_vol"}
+                    # 根据当前选择的风险偏好确定要展示的组合
+                    selected_profile = risk_profile_map.get(risk, "min_vol")
+
+                    # 如果当前是中风险，计算 min_vol 和 max_sharpe 的等权平均
+                    if risk == "中" and "min_vol" in portfolio_data and "max_sharpe" in portfolio_data:
+                        st.caption("当前显示: 中风险偏好 (最小波动 + 最大夏普等权组合)")
+                        pv_min = portfolio_data["min_vol"]
+                        pv_max = portfolio_data["max_sharpe"]
+
+                        # 计算平均组合收益率
+                        portfolio_real = [(a + b) / 2 for a, b in zip(pv_min["real"], pv_max["real"])]
+                        portfolio_naive = [(a + b) / 2 for a, b in zip(pv_min["naive_pred"], pv_max["naive_pred"])]
+                        portfolio_lgb = [(a + b) / 2 for a, b in zip(pv_min["lgb_pred"], pv_max["lgb_pred"])]
+
+                        # 显示权重配置
+                        st.markdown("**组合权重配置**")
+                        weights_df = pd.DataFrame({
+                            "标的": list(pv_min["weights"].keys()),
+                            "低风险权重": [f"{pv_min['weights'].get(k, 0):.2%}" for k in pv_min["weights"].keys()],
+                            "高风险权重": [f"{pv_max['weights'].get(k, 0):.2%}" for k in pv_min["weights"].keys()]
+                        })
+                        st.dataframe(weights_df)
+
+                    elif selected_profile in portfolio_data:
+                        profile_name = "低风险(最小波动)" if selected_profile == "min_vol" else "高风险(最大夏普)"
+                        st.caption(f"当前显示: {profile_name}组合")
+                        pv = portfolio_data[selected_profile]
+
+                        portfolio_real = pv["real"]
+                        portfolio_naive = pv["naive_pred"]
+                        portfolio_lgb = pv["lgb_pred"]
+
+                        # 显示权重配置
+                        st.markdown("**组合权重配置**")
+                        weights_df = pd.DataFrame({
+                            "标的": list(pv["weights"].keys()),
+                            "权重": [f"{v:.2%}" for v in pv["weights"].values()]
+                        }).sort_values("权重", ascending=False)
+                        st.dataframe(weights_df)
+                    else:
+                        st.warning("未找到对应风险偏好的组合数据。")
+                        portfolio_real = portfolio_naive = portfolio_lgb = []
+
+                    if portfolio_real:
+                        # 计算累计收益
+                        portfolio_real_cum = [np.prod(1 + np.array(portfolio_real[:i+1])) - 1 for i in range(len(portfolio_real))]
+                        portfolio_naive_cum = [np.prod(1 + np.array(portfolio_naive[:i+1])) - 1 for i in range(len(portfolio_naive))]
+                        portfolio_lgb_cum = [np.prod(1 + np.array(portfolio_lgb[:i+1])) - 1 for i in range(len(portfolio_lgb))]
+
+                        # 显示组合回测指标
+                        if risk == "中":
+                            pv_min = portfolio_data["min_vol"]
+                            pv_max = portfolio_data["max_sharpe"]
+                            metrics_df = pd.DataFrame({
+                                "指标": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "最终累计收益"],
+                                "Naive": [
+                                    f"{(pv_min['metrics']['naive']['mae'] + pv_max['metrics']['naive']['mae'])/2:.4f}",
+                                    f"{(pv_min['metrics']['naive']['rmse'] + pv_max['metrics']['naive']['rmse'])/2:.4f}",
+                                    f"{portfolio_naive_cum[-1]:.2%}"
+                                ],
+                                "LightGBM": [
+                                    f"{(pv_min['metrics']['lgb']['mae'] + pv_max['metrics']['lgb']['mae'])/2:.4f}",
+                                    f"{(pv_min['metrics']['lgb']['rmse'] + pv_max['metrics']['lgb']['rmse'])/2:.4f}",
+                                    f"{portfolio_lgb_cum[-1]:.2%}"
+                                ],
+                                "实际": ["-", "-", f"{portfolio_real_cum[-1]:.2%}"]
+                            })
+                        else:
+                            pv = portfolio_data.get(selected_profile, {})
+                            m_naive = pv.get("metrics", {}).get("naive", {})
+                            m_lgb = pv.get("metrics", {}).get("lgb", {})
+                            metrics_df = pd.DataFrame({
+                                "指标": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "最终累计收益"],
+                                "Naive": [f"{m_naive.get('mae', 0):.4f}", f"{m_naive.get('rmse', 0):.4f}", f"{portfolio_naive_cum[-1]:.2%}"],
+                                "LightGBM": [f"{m_lgb.get('mae', 0):.4f}", f"{m_lgb.get('rmse', 0):.4f}", f"{portfolio_lgb_cum[-1]:.2%}"],
+                                "实际": ["-", "-", f"{portfolio_real_cum[-1]:.2%}"]
+                            })
+                        st.table(metrics_df)
+
+                        # 绘制组合累计收益图
+                        chart_df_portfolio = pd.DataFrame({
+                            "Date": dates,
+                            "实际": portfolio_real_cum,
+                            "Naive": portfolio_naive_cum,
+                            "LightGBM": portfolio_lgb_cum
+                        })
+
+                        fig_portfolio = px.line(chart_df_portfolio, x="Date", y=["实际", "Naive", "LightGBM"],
+                                                 title=f"整个组合累计收益回测对比 ({risk}风险偏好)",
+                                                 markers=True)
+                        st.plotly_chart(fig_portfolio, use_container_width=True)
+
+                        st.markdown("""
+                        **组合回测说明：**
+                        - **实际 (蓝色)**: 组合的实际累计收益（按优化权重加权各资产真实收益）。
+                        - **Naive (红色)**: 基于过去30天均值预测的组合收益。
+                        - **LightGBM (绿色)**: LightGBM预测的组合收益。
+                        - 组合权重根据您选择的"风险偏好"从优化结果中获取。
+                        """)
+                else:
+                    st.info("未找到组合层面回测数据。请重新运行 `python analyze_backtest.py` 生成。")
+            else:
+                st.error("未找到 backtest_results.json 文件。请运行 `python analyze_backtest.py`。")
+
+    # ========== Kronos 预测 Tab (独立标签) ==========
+    with tab_kronos:
+        st.header("🧠 Kronos 深度学习预测")
+        st.markdown("""
+        **Kronos** 是专门用于金融时序预测的基础模型 (Foundation Model)。
+
+        您可以上传自己的股票数据 CSV 文件，Kronos 将基于历史 K 线数据预测未来走势。
+        """)
+
+        # Check Kronos availability
+        if not KRONOS_AVAILABLE:
+            st.error("❌ Kronos 模型未安装或加载失败。请检查 kronos_model/ 目录是否存在。")
+            st.info("如果需要使用 Kronos，请从 Kronos-master 项目复制 model/ 目录到当前目录。")
         else:
-            st.error("未找到 backtest_results.json 文件。请运行 `python analyze_backtest.py`。")
+            st.success("✅ Kronos 模型已就绪")
+
+        # File upload section
+        st.subheader("📁 上传数据文件")
+        uploaded_file = st.file_uploader(
+            "上传 CSV 文件 (必须包含: open, high, low, close 列, 可选 volume)",
+            type=['csv'],
+            help="CSV 格式: timestamps/timestamp/date, open, high, low, close, volume(可选)"
+        )
+
+        # Data directory files
+        kronos_data_dir = os.path.join(_THIS_DIR, "kronos_data")
+        os.makedirs(kronos_data_dir, exist_ok=True)
+
+        # Show existing data files
+        existing_files = [f for f in os.listdir(kronos_data_dir) if f.endswith('.csv')]
+        if existing_files:
+            st.caption(f"📂 本地数据目录已有文件: {', '.join(existing_files)}")
+            selected_existing = st.selectbox(
+                "或选择已有文件",
+                options=["-- 上传新文件 --"] + existing_files,
+                index=0
+            )
+        else:
+            selected_existing = "-- 上传新文件 --"
+
+        # Load data button
+        df_loaded = None
+        data_source = None
+
+        col_load1, col_load2 = st.columns([1, 1])
+        with col_load1:
+            if uploaded_file is not None:
+                if st.button("📥 加载上传的文件", key="load_uploaded"):
+                    try:
+                        df_loaded = pd.read_csv(uploaded_file)
+                        data_source = f"上传: {uploaded_file.name}"
+                        st.session_state['kronos_df'] = df_loaded
+                        st.session_state['kronos_source'] = data_source
+                        st.success(f"✅ 已加载: {uploaded_file.name}")
+                    except Exception as e:
+                        st.error(f"加载失败: {e}")
+
+        with col_load2:
+            if selected_existing != "-- 上传新文件 --":
+                if st.button("📂 加载本地文件", key="load_existing"):
+                    try:
+                        file_path = os.path.join(kronos_data_dir, selected_existing)
+                        df_loaded = pd.read_csv(file_path)
+                        data_source = f"本地: {selected_existing}"
+                        st.session_state['kronos_df'] = df_loaded
+                        st.session_state['kronos_source'] = data_source
+                        st.success(f"✅ 已加载: {selected_existing}")
+                    except Exception as e:
+                        st.error(f"加载失败: {e}")
+
+        # Process loaded data
+        if 'kronos_df' in st.session_state:
+            df = st.session_state['kronos_df']
+            st.markdown("---")
+            st.subheader("📊 数据预览")
+
+            # Validate and process columns
+            required_cols = ['open', 'high', 'low', 'close']
+            missing_cols = [c for c in required_cols if c not in df.columns]
+
+            if missing_cols:
+                st.error(f"❌ 缺少必需列: {missing_cols}")
+                st.info("CSV 必须包含: open, high, low, close (小写)")
+            else:
+                # Process timestamp
+                if 'timestamps' in df.columns:
+                    df['timestamps'] = pd.to_datetime(df['timestamps'])
+                elif 'timestamp' in df.columns:
+                    df['timestamps'] = pd.to_datetime(df['timestamp'])
+                elif 'date' in df.columns:
+                    df['timestamps'] = pd.to_datetime(df['date'])
+                else:
+                    df['timestamps'] = pd.date_range(start='2024-01-01', periods=len(df), freq='D')
+
+                # Convert to numeric
+                for col in required_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                if 'volume' in df.columns:
+                    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+
+                df = df.dropna()
+
+                # Show data info
+                info_col1, info_col2, info_col3 = st.columns(3)
+                with info_col1:
+                    st.metric("数据行数", len(df))
+                with info_col2:
+                    st.metric("时间范围", f"{df['timestamps'].iloc[0].strftime('%Y-%m-%d')} ~ {df['timestamps'].iloc[-1].strftime('%Y-%m-%d')}")
+                with info_col3:
+                    price_range = f"{df['close'].min():.2f} - {df['close'].max():.2f}"
+                    st.metric("价格区间", price_range)
+
+                st.dataframe(df.tail(10))
+
+                # Kronos prediction settings
+                st.markdown("---")
+                st.subheader("⚙️ Kronos 预测设置")
+
+                cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
+                with cfg_col1:
+                    k_model = st.selectbox(
+                        "模型大小",
+                        options=["kronos-small (推荐)", "kronos-mini (轻量)", "kronos-base (大型)"],
+                        index=0
+                    )
+                    model_key = k_model.split(" (")[0]
+                with cfg_col2:
+                    k_lookback = st.slider("历史窗口 (lookback)", min_value=30, max_value=400, value=120, step=10)
+                with cfg_col3:
+                    k_pred_len = st.slider("预测长度 (天数)", min_value=5, max_value=120, value=30, step=5)
+
+                # Check data sufficiency
+                if len(df) < k_lookback + k_pred_len:
+                    st.warning(f"⚠️ 数据不足: 需要至少 {k_lookback + k_pred_len} 行，当前只有 {len(df)} 行")
+                else:
+                    # Run prediction
+                    if st.button("🚀 运行 Kronos 预测", type="primary", key="run_kronos_tab6"):
+                        if not KRONOS_AVAILABLE:
+                            st.error("Kronos 未安装，无法运行预测")
+                        else:
+                            with st.spinner("Kronos 正在分析历史数据并预测未来走势..."):
+                                try:
+                                    from kronos_model import Kronos, KronosTokenizer, KronosPredictor
+
+                                    model_configs = {
+                                        'kronos-mini': {
+                                            'model_id': 'NeoQuasar/Kronos-mini',
+                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
+                                            'context_length': 2048
+                                        },
+                                        'kronos-small': {
+                                            'model_id': 'NeoQuasar/Kronos-small',
+                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
+                                            'context_length': 512
+                                        },
+                                        'kronos-base': {
+                                            'model_id': 'NeoQuasar/Kronos-base',
+                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
+                                            'context_length': 512
+                                        }
+                                    }
+
+                                    config = model_configs.get(model_key, model_configs['kronos-small'])
+
+                                    # Load model
+                                    tokenizer = KronosTokenizer.from_pretrained(config['tokenizer_id'])
+                                    model = Kronos.from_pretrained(config['model_id'])
+                                    predictor = KronosPredictor(model, tokenizer, device='cpu', max_context=config['context_length'])
+
+                                    # Prepare data
+                                    hist_df = df.tail(k_lookback).reset_index(drop=True)
+                                    last_date = hist_df['timestamps'].iloc[-1]
+
+                                    # Calculate future dates - handle edge cases
+                                    if len(hist_df) > 1:
+                                        time_diff = hist_df['timestamps'].iloc[1] - hist_df['timestamps'].iloc[0]
+                                        # Ensure time_diff is not zero
+                                        if time_diff.total_seconds() <= 0:
+                                            time_diff = pd.Timedelta(days=1)
+                                    else:
+                                        time_diff = pd.Timedelta(days=1)
+
+                                    # Convert Timedelta to frequency string for date_range
+                                    if time_diff >= pd.Timedelta(days=1):
+                                        freq_str = f"{int(time_diff.total_seconds() // 86400)}D"
+                                    elif time_diff >= pd.Timedelta(hours=1):
+                                        freq_str = f"{int(time_diff.total_seconds() // 3600)}H"
+                                    elif time_diff >= pd.Timedelta(minutes=1):
+                                        freq_str = f"{int(time_diff.total_seconds() // 60)}min"
+                                    else:
+                                        freq_str = f"{int(time_diff.total_seconds())}S"
+
+                                    future_dates = pd.date_range(start=last_date + time_diff, periods=k_pred_len, freq=freq_str)
+
+                                    # Run prediction
+                                    x_df = hist_df[['open', 'high', 'low', 'close'] + (['volume'] if 'volume' in hist_df.columns else [])]
+                                    x_timestamp = hist_df['timestamps']
+                                    y_timestamp = pd.Series(future_dates, name='timestamps')
+
+                                    pred_df = predictor.predict(
+                                        df=x_df,
+                                        x_timestamp=x_timestamp,
+                                        y_timestamp=y_timestamp,
+                                        pred_len=k_pred_len,
+                                        T=1.0,
+                                        top_p=0.9,
+                                        sample_count=1,
+                                        verbose=True
+                                    )
+
+                                    st.session_state['kronos_prediction'] = {
+                                        'hist_df': hist_df,
+                                        'pred_df': pred_df,
+                                        'future_dates': future_dates,
+                                        'model': model_key
+                                    }
+                                    st.success(f"✅ {model_key} 预测完成！")
+
+                                except Exception as e:
+                                    st.error(f"预测失败: {e}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
+
+                    # Display prediction results
+                    if 'kronos_prediction' in st.session_state:
+                        st.markdown("---")
+                        st.subheader("📈 预测结果")
+
+                        kp = st.session_state['kronos_prediction']
+                        hist = kp['hist_df']
+                        pred = kp['pred_df']
+                        future_dates = kp['future_dates']
+
+                        # Metrics
+                        last_close = hist['close'].iloc[-1]
+                        pred_last_close = pred['close'].iloc[-1]
+                        total_return = (pred_last_close / last_close - 1) * 100
+                        pred_high = pred['high'].max()
+                        pred_low = pred['low'].min()
+
+                        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                        with m_col1:
+                            st.metric("最新收盘价", f"{last_close:.2f}")
+                        with m_col2:
+                            st.metric(f"预测{k_pred_len}日后", f"{pred_last_close:.2f}", f"{total_return:.1f}%")
+                        with m_col3:
+                            st.metric("预测区间最高", f"{pred_high:.2f}")
+                        with m_col4:
+                            st.metric("预测区间最低", f"{pred_low:.2f}")
+
+                        # Prediction table
+                        st.markdown("**详细预测数据**")
+                        pred_display = pred.copy()
+                        pred_display.index = future_dates[:len(pred)]
+                        st.dataframe(pred_display.round(2))
+
+                        # Simple chart
+                        st.markdown("**价格走势预测**")
+                        chart_data = pd.DataFrame({
+                            '日期': list(hist['timestamps'].tail(30)) + list(future_dates),
+                            '类型': ['历史'] * min(30, len(hist)) + ['预测'] * len(future_dates),
+                            '收盘价': list(hist['close'].tail(min(30, len(hist)))) + list(pred['close'])
+                        })
+
+                        fig_pred = px.line(
+                            chart_data, x='日期', y='收盘价', color='类型',
+                            title=f'Kronos 预测 ({model_key})',
+                            markers=True,
+                            color_discrete_map={'历史': '#1f77b4', '预测': '#ff7f0e'}
+                        )
+                        st.plotly_chart(fig_pred, use_container_width=True)
+
+                        # Download results
+                        csv = pred.to_csv(index=False)
+                        st.download_button(
+                            label="📥 下载预测结果 (CSV)",
+                            data=csv,
+                            file_name=f'kronos_prediction_{model_key}_{k_pred_len}d.csv',
+                            mime='text/csv'
+                        )
 
 
 if __name__ == "__main__":
