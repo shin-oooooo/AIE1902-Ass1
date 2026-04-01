@@ -11,9 +11,28 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class FetchConfig:
-    start: str = "2021-01-01"
-    end: str = "2026-02-28"
+    # Step 2: 起始日期 = Today - 3 Years
+    start: str = (datetime.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    end: str = datetime.now().strftime("%Y-%m-%d")
     zscore_threshold: float = 3.0
+
+
+def check_symbol_validity(symbol: str) -> bool:
+    """
+    Step 2: 实现 check_symbol_validity 函数
+    检查标的是否存在且有交易数据
+    """
+    import akshare as ak
+    try:
+        # 简单尝试获取最近一天的行情来验证
+        if symbol.upper() == "AU0":
+            df = ak.futures_main_ak(symbol="AU0")
+        else:
+            # 尝试美股
+            df = ak.stock_us_daily(symbol=symbol.upper(), adjust="qfq")
+        return not df.empty
+    except:
+        return False
 
 
 def _now_iso() -> str:

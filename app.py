@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 import sys
@@ -13,7 +14,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-from ass1_core import annual_metrics, corr_matrix, daily_returns, gaussian_kde_1d, load_bundle, normalize_prices, rolling_volatility
+from ass1_core import annual_metrics, corr_matrix, daily_returns, gaussian_kde_1d, get_prob_summary, load_bundle, normalize_prices, rolling_volatility
 
 # Kronos integration
 try:
@@ -240,7 +241,7 @@ def _build_explain(
     weights_table = _generate_weights_table_html(weights)
     target_count = len(weights)
     
-    return f"""<div style="font-family: sans-serif; line-height: 1.6;"><table style="width: 100%; border-collapse: collapse;"><thead><tr style="background-color: #f8f9fa;"><th style="width: 60%; padding: 12px; border-bottom: 2px solid #ddd; text-align: left;">说明与投资建议（面向零基础）</th><th style="width: 40%; padding: 12px; border-bottom: 2px solid #ddd; text-align: left;">名词解释与原理拆解</th></tr></thead><tbody><!-- 1. 数据来源 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>1. 数据从哪里来、怎么变成可用的“参数”</strong><br><br><strong>(1) 数据获取与清洗</strong><br>我们从 AkShare 接口获取了 {target_count} 个标的的历史日度收盘价。原始价格数据可能包含录入错误或极端的黑天鹅事件（如暴跌 99%），这会干扰模型判断。因此，我们使用 <strong>Z-Score</strong> 方法识别并剔除统计学意义上的离群点，确保输入数据的纯净性。<br><br><strong>(2) 数据集划分</strong><br>为了严谨验证模型能力，我们将时间序列切分为两段：<br>- <strong>训练集</strong>：用于让模型“学习”历史规律。<br>- <strong>测试集</strong>：用于“考试”，检验模型在未知未来的表现。<br>这能有效防止“死记硬背”历史答案（过拟合）。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>Z-Score (标准分数)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 历史收益率序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算序列均值 μ 与标准差 σ，将每个收益率 x 转化为 z = (x - μ) / σ。<br><span style="color: #444; font-weight: bold;">[效果]</span> 量化“偏离正常水平的程度”。若 |z|>3，判定为异常并剔除，防止极端值扭曲统计结果。<br><br><strong>训练集 / 测试集 (Train/Test Set)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 完整的时间序列数据。<br><span style="color: #444; font-weight: bold;">[处理]</span> 按时间点一分为二：前 80% 仅用于计算参数，后 20% 仅用于验证预测。<br><span style="color: #444; font-weight: bold;">[效果]</span> 模拟真实的“未知未来”场景，确保评估出的模型能力不是靠“偷看答案”得来的。</td></tr><!-- 2. 图表分析 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>2. 图表与统计指标如何影响结论</strong><br><br><strong>(1) 统一比较基准：日收益率</strong><br>不同标的价格（100元 vs 3000元）无法直接对比。我们计算 <strong>日收益率</strong>（每日涨跌百分比）作为所有分析的基础。<br><br><strong>(2) 风险与收益的可视化</strong><br>- <strong>归一化</strong>走势图帮助我们直观对比谁涨得快、谁更稳。<br>- <strong>滚动波动率</strong>（如30日窗口）展示了风险随时间的变化，避免被长期平均值掩盖近期波动。（数据实证：在本次回测周期中，**AU0 (黄金)** 展现了惊人的防御性，年化波动率仅 18%（与大盘 SPY 持平），相比之下，**AVGO** 的波动率高达 58%，意味着持有它的心理压力是持有黄金的三倍以上。）<br>- <strong>核密度估计 (KDE)</strong> 描绘了收益率的“概率地图”，让我们看到极端暴涨暴跌出现的可能性。<br><br><strong>(3) 资产间的联动：相关性</strong><br><strong>相关系数</strong> 告诉我们资产是否“同涨同跌”。<strong>相关性热力图</strong> 用颜色直观展示了这一点：深红代表高度同步（风险无法分散），深蓝代表走势相反（具有对冲价值）。（数据洞察：热力图清晰地展示了“科技抱团”现象——NVDA 与 TSMC 的相关性高达 0.62，意味着它们往往齐涨齐跌。唯独 **AU0** 呈现出珍贵的“蓝海”，与 AMZN (-0.11)、MSFT (-0.06) 等巨头均为负相关。这就是为什么算法会重仓黄金——它是唯一能有效对冲科技股崩盘风险的“减震器”。）<br><br><strong>(4) 综合性价比：夏普比率</strong><br>我们将 <strong>年化收益率</strong> 与 <strong>年化波动率</strong> 画在同一张图上，并用 <strong>夏普比率</strong> 衡量“性价比”：承担单位风险能换来多少超额收益。（结论：数据告诉我们要“买稳赚的”而不是“买涨得猛的”。虽然 AVGO 涨幅惊人，但其单位风险回报率（夏普 1.25）远低于黄金（2.94）和谷歌（1.96）。优化器会自动惩罚那些“大起大落”的标的。）<br><br><strong>(5) 深度图表解读：为什么这样配置？</strong><br><strong>1) 相关性热力图 (Correlation Heatmap) 给了我们什么信息？</strong><br>这张图展示了资产两两之间的联动程度。AU0 (黄金) 所在的行/列呈现出大量的冷色调（蓝色/浅色），相关系数多在 0 附近甚至为负（如与 SPY 的相关性仅为 -0.04）。<br><span style="color: #0056b3; font-weight: bold;">结论：</span>黄金与科技股/美股大盘几乎“绝缘”。当股市剧烈震荡时，黄金往往能走出独立行情。因此，在组合中配置 37.69% 的 AU0 并不是为了搏取最高收益，而是利用这种“不相关性”来充当组合的减震器，大幅降低整体回撤风险。<br><br><strong>2) 夏普比率图 (Sharpe Ratio Plot) 揭示了什么？</strong><br>在图中，AU0 位于左上区域（低波动、较高收益），夏普比率高达 2.94，是全场“性价比”之王；而 AVGO 虽然收益极高（年化 73%），但波动率也最大（年化 59%），位于图表最右侧。<br><span style="color: #0056b3; font-weight: bold;">结论：</span>单一押注高收益资产（如 AVGO/NVDA）虽然诱人，但性价比（夏普比率）其实不如稳健资产。优化算法之所以给 AVGO 分配较少权重（1.04%），正是因为它的“单位风险回报”不如黄金划算。投资的真谛不在于“最能涨”，而在于“最稳地涨”。<br><br><strong>3) 滚动波动率 (Rolling Volatility) 说明了什么？</strong><br>通过观察 30 日滚动波动率曲线，我们可以看到 NVDA, AVGO 等科技股的曲线经常出现剧烈的尖峰（Spike），说明其风险具有突发性和聚集性；而 SPY 和 MSFT 的曲线则相对平缓。<br><span style="color: #0056b3; font-weight: bold;">结论：</span>科技成长股的持仓体验往往是“过山车”式的。为了平滑这种心理压力，必须引入波动率曲线平缓的基石资产（如 SPY, MSFT, AU0），确保你在市场恐慌时依然拿得住筹码，避免倒在黎明前。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>日收益率 (Daily Return)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 每日收盘价 P_t。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算 (P_t - P_{{t-1}}) / P_{{t-1}}。<br><span style="color: #444; font-weight: bold;">[效果]</span> 消除价格绝对值差异，将“金额变动”转化为可跨资产比较的“涨跌比例”。<br><br><strong>归一化 (Normalization)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 多只股票的价格序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 将每只股票第1天价格设为1.0，后续价格按涨跌幅同比例缩放。<br><span style="color: #444; font-weight: bold;">[效果]</span> 强制所有曲线从同一起跑线出发，直观对比相对强弱。<br><br><strong>滚动波动率 (Rolling Volatility)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 日收益率序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 逐日移动一个 30 天窗口，计算窗口内收益率的标准差。<br><span style="color: #444; font-weight: bold;">[效果]</span> 捕捉风险的动态变化（如某个月市场突然恐慌），比单一的“平均波动率”更敏感。<br><br><strong>核密度估计 (KDE)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 历史收益率分布。<br><span style="color: #444; font-weight: bold;">[处理]</span> 使用高斯核函数对直方图进行平滑拟合。<br><span style="color: #444; font-weight: bold;">[效果]</span> 绘制出平滑的概率山峰图，直观展示“常态”在哪里，“极端风险”有多大概率。<br><br><strong>相关系数 (Correlation)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 两只股票的收益率序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算协方差除以各自标准差的乘积。<br><span style="color: #444; font-weight: bold;">[效果]</span> 得到 [-1, 1] 的数值：1代表完全同步（无分散效果），-1代表完全对冲（风险抵消）。<br><br><strong>相关性热力图 (Heatmap)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> {target_count}x{target_count} 相关系数矩阵。<br><span style="color: #444; font-weight: bold;">[处理]</span> 将数值映射为颜色（红=正相关，蓝=负相关）。<br><span style="color: #444; font-weight: bold;">[效果]</span> 将枯燥的数字矩阵转化为视觉图谱，一眼识别出哪些资产是“抱团”的。<br><br><strong>年化收益率 (Annualized Return)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 日均收益率。<br><span style="color: #444; font-weight: bold;">[处理]</span> 日均值 × 252（年交易日）。<br><span style="color: #444; font-weight: bold;">[效果]</span> 将短期数据扩展为符合直觉的“年回报率”概念。<br><br><strong>年化波动率 (Annualized Volatility)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 日收益率标准差。<br><span style="color: #444; font-weight: bold;">[处理]</span> 日标准差 × √252。<br><span style="color: #444; font-weight: bold;">[效果]</span> 统一量纲，便于与年化收益率进行比较。<br><br><strong>夏普比率 (Sharpe Ratio)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 年化收益率与年化波动率。<br><span style="color: #444; font-weight: bold;">[处理]</span> (收益 - 无风险利率) / 波动率。<br><span style="color: #444; font-weight: bold;">[效果]</span> 衡量“性价比”：每承担 1 单位风险，能换来多少超额回报。</td></tr><!-- 3. LightGBM --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>3. LightGBM 预测模型如何产生“期望收益”</strong><br><br><strong>(1) 特征工程：从历史中提取规律</strong><br>模型不仅看昨天的涨跌，还通过 <strong>特征 (Features)</strong> 观察更多维度：<br>- <strong>滞后项</strong>：过去第1天、第2天...的收益。<br>- <strong>动量</strong>：过去一段时间的累计涨幅趋势。<br>- 滚动统计：近期的平均水平和波动状态。<br><br><strong>(2) 预测引擎：LightGBM</strong><br>相比于简单的“历史均值”（Naive），<strong>LightGBM</strong> 是一种强大的机器学习算法，能捕捉复杂的非线性规律。它在 <strong>测试集</strong> 上的表现通过以下指标衡量：<br>- <strong>MAE / RMSE</strong>：预测数值的误差大小（越小越好）。<br>- <strong>方向准确率</strong>：猜对“涨/跌”方向的概率（越高越好）。<br><br>最终，模型输出每个标的未来的“预期日均收益率”，构成我们的投资导航图。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>特征 (Features)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 原始价格/收益序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算统计量（如5日均线、10日波动等）作为新变量。<br><span style="color: #444; font-weight: bold;">[效果]</span> 将单一的价格信息扩展为多维度的“市场状态描述”，供模型学习。<br><br><strong>滞后项 (Lag)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 历史收益率。<br><span style="color: #444; font-weight: bold;">[处理]</span> 将时间轴平移（如用昨天的 t-1 预测今天的 t）。<br><span style="color: #444; font-weight: bold;">[效果]</span> 捕捉“惯性”或“反转”效应（如昨日大跌今日往往反弹）。<br><br><strong>动量 (Momentum)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 过去 N 天的收益率。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算期间累计涨跌幅。<br><span style="color: #444; font-weight: bold;">[效果]</span> 量化趋势强度，判断当前是处于上升期还是下跌期。<br><br><strong>LightGBM</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 构造好的特征矩阵。<br><span style="color: #444; font-weight: bold;">[处理]</span> 训练数百棵决策树，每棵树修正前者的残差，最终集成投票。<br><span style="color: #444; font-weight: bold;">[效果]</span> 相比线性模型，能捕捉复杂的非线性市场规律（如“跌多了且波动大时容易反弹”）。<br><br><strong>MAE / RMSE</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 预测值 vs 真实值。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算两者差值的绝对值平均或平方根。<br><span style="color: #444; font-weight: bold;">[效果]</span> 数值越小，说明模型预测的“点位”越精准。<br><br><strong>方向准确率</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 预测正负号 vs 真实正负号。<br><span style="color: #444; font-weight: bold;">[处理]</span> 统计符号一致的比例。<br><span style="color: #444; font-weight: bold;">[效果]</span> 即使点位不准，若能猜对“涨跌方向”，对投资依然极具价值。</td></tr><!-- 4. 优化 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>4. 均值-方差优化如何变成最终权重</strong><br><br><strong>(1) 两大核心输入</strong><br>要计算最佳投资比例，我们需要两个数学对象：<br>- <strong>期望收益向量 (μ)</strong>：由 LightGBM 预测的 {target_count} 个标的未来日均收益。<br>- <strong>协方差矩阵 (Σ)</strong>：描述 {target_count} 个标的之间波动大小和联动关系的矩阵。<br><br><strong>(2) 寻找最优解：蒙特卡洛模拟</strong><br>我们利用 <strong>均值-方差优化</strong> 理论，通过 <strong>蒙特卡洛</strong> 方法随机生成数十万种投资组合。在“{risk}风险偏好”下，我们寻找那个既能提供不错收益，又能通过分散配置将波动控制在合理范围的组合。<br><br><strong>(3) 最终产出：权重</strong><br>算法最终给出一组 <strong>权重</strong>（百分比），告诉我们每 100 元资金应分别投向哪些资产。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>期望收益向量 (μ)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> LightGBM 模型的预测输出。<br><span style="color: #444; font-weight: bold;">[处理]</span> 整理为 {target_count}x1 列向量。<br><span style="color: #444; font-weight: bold;">[效果]</span> 告诉优化器每个资产“未来可能赚多少”。<br><br><strong>协方差矩阵 (Σ)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 历史收益率序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算两两之间的协方差，构成 {target_count}x{target_count} 矩阵。<br><span style="color: #444; font-weight: bold;">[效果]</span> 告诉优化器“哪些资产一起动”，从而指导分散配置。<br><br><strong>均值-方差优化</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 输入 μ 和 Σ。<br><span style="color: #444; font-weight: bold;">[处理]</span> 求解数学规划问题：在风险约束下最大化收益。<br><span style="color: #444; font-weight: bold;">[效果]</span> 找到理论上的“最佳性价比”配方。<br><br><strong>蒙特卡洛 (Monte Carlo)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 随机数生成器。<br><span style="color: #444; font-weight: bold;">[处理]</span> 随机尝试 20 万种不同的权重组合，计算每一组的结果。<br><span style="color: #444; font-weight: bold;">[效果]</span> 暴力穷举出近似的最优解，解决复杂数学方程难以直接求解的问题。<br><br><strong>权重 (Weights)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 优化算法的最优解。<br><span style="color: #444; font-weight: bold;">[处理]</span> 归一化使得总和为 100%。<br><span style="color: #444; font-weight: bold;">[效果]</span> 直接转化为可执行的资金分配指令（如“买 30% 黄金”）。</td></tr><!-- 5. 投资建议 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>5. 你应该如何进行最后投资</strong><br><br>基于“{risk}风险偏好”的计算结果，我们建议的资金分配方案如下：<br><br>{weights_table}<br><strong>操作指南：</strong><br>1. <strong>长期定投（推荐）</strong>：按上述比例首次建仓后，每月投入固定资金，依然按此比例分配。定期（如每季度）检查持仓，若某资产占比偏离超过 5%，则卖高买低进行<strong>再平衡</strong>。<br>2. <strong>风险控制</strong>：严格遵守纪律，不因短期涨跌随意更改配方。若必须做短线，请设置严格止损线（如 -5%）。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>再平衡 (Rebalance)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 账户当前持仓 vs 目标权重。<br><span style="color: #444; font-weight: bold;">[处理]</span> 卖出涨幅过大导致占比超标的资产，买入占比不足的资产。<br><span style="color: #444; font-weight: bold;">[效果]</span> 强制实现“高抛低吸”，维持组合的风险特征不随市场波动而漂移。</td></tr></tbody></table></div>"""
+    return f"""<div style="font-family: sans-serif; line-height: 1.6;"><table style="width: 100%; border-collapse: collapse;"><thead><tr style="background-color: #f8f9fa;"><th style="width: 60%; padding: 12px; border-bottom: 2px solid #ddd; text-align: left;">说明与投资建议（面向零基础）</th><th style="width: 40%; padding: 12px; border-bottom: 2px solid #ddd; text-align: left;">名词解释与原理拆解</th></tr></thead><tbody><!-- 1. 数据来源 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>1. 数据从哪里来、怎么变成可用的“参数”</strong><br><br><strong>(1) 数据获取与清洗</strong><br>我们从 AkShare 接口获取了 {target_count} 个标的的历史日度收盘价。原始价格数据可能包含录入错误或极端的黑天鹅事件（如暴跌 99%），这会干扰模型判断。因此，我们使用 <strong>Z-Score</strong> 方法识别并剔除统计学意义上的离群点，确保输入数据的纯净性。<br><br><strong>(2) 数据集划分</strong><br>为了严谨验证模型能力，我们将时间序列切分为两段：<br>- <strong>训练集</strong>：用于让模型“学习”历史规律。<br>- <strong>测试集</strong>：用于“考试”，检验模型在未知未来的表现。<br>这能有效防止“死记硬背”历史答案（过拟合）。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>Z-Score (标准分数)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 历史收益率序列。<br><span style="color: #444; font-weight: bold;">[处理]</span> 计算序列均值 μ 与标准差 σ，将每个收益率 x 转化为 z = (x - μ) / σ。<br><span style="color: #444; font-weight: bold;">[效果]</span> 量化“偏离正常水平的程度”。若 |z|>3，判定为异常并剔除，防止极端值扭曲统计结果。<br><br><strong>训练集 / 测试集 (Train/Test Set)</strong><br><span style="color: #444; font-weight: bold;">[数据]</span> 完整的时间序列数据。<br><span style="color: #444; font-weight: bold;">[处理]</span> 按时间点一分为二：前 80% 仅用于计算参数，后 20% 仅用于验证预测。<br><span style="color: #444; font-weight: bold;">[效果]</span> 模拟真实的“未知未来”场景，确保评估出的模型能力不是靠“偷看答案”得来的。</td></tr><!-- 2. 图表分析 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>2. 图表与统计指标如何影响结论</strong><br><br><strong>(1) 统一比较基准：日收益率</strong><br>不同标的价格（100元 vs 3000元）无法直接对比。我们计算 <strong>日收益率</strong>（每日涨跌百分比）作为所有分析的基础。<br><br><strong>(2) 风险与收益的可视化</strong><br>- <strong>归一化</strong>对比图：让所有资产从 1.0 开始起跑，直观看出谁跑得快（收益）、谁波动大（风险）。<br>- <strong>波动分布 (KDE)</strong>：展示收益率的分布情况。越集中的曲线代表越稳健。<br><br><strong>(3) 核心指标：年化夏普比率 (Sharpe Ratio)</strong><br>衡量“每一份风险换回了多少超额收益”。夏普比率越高，代表该资产的性价比越高。</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>归一化 (Normalization)</strong><br><span style="color: #444; font-weight: bold;">[原理]</span> P_norm = P_t / P_initial。<br><span style="color: #444; font-weight: bold;">[意义]</span> 消除价格绝对规模的影响，只看百分比变化。<br><br><strong>夏普比率 (Sharpe Ratio)</strong><br><span style="color: #444; font-weight: bold;">[公式]</span> (R_p - R_f) / σ_p。<br><span style="color: #444; font-weight: bold;">[意义]</span> 收益减去无风险收益（如国债），再除以波动的标准差。这是投资界的“性价比”金标准。</td></tr><!-- 3. 组合优化 --><tr><td style="padding: 12px; vertical-align: top; border-bottom: 1px solid #eee;"><strong>3. 怎么算出“最优”配置比例？</strong><br><br><strong>(1) 现代组合理论 (MPT)</strong><br>鸡蛋不要放在一个篮子里，但怎么放才最科学？我们通过计算资产间的 <strong>相关性</strong>（谁和谁同步涨跌），利用数学方法寻找在给定风险水平下收益最高的点。<br><br><strong>(2) 本次推荐的配置方案</strong><br>{weights_table}<br><br><strong>(3) 专家建议</strong><br>{_suggest_text(dataset, risk, weights)}</td><td style="padding: 12px; vertical-align: top; background-color: #fafafa; border-bottom: 1px solid #eee; border-left: 1px solid #ddd;"><strong>资产相关性 (Correlation)</strong><br><span style="color: #444; font-weight: bold;">[取值]</span> -1 到 +1。+1 代表完全同步，-1 代表完全反向。<br><span style="color: #444; font-weight: bold;">[意义]</span> 找到相关性低的资产组合，可以抵消部分波动，实现“1+1>2”的控风险效果。<br><br><strong>有效边界 (Efficient Frontier)</strong><br><span style="color: #444; font-weight: bold;">[原理]</span> 通过数万次模拟（蒙特卡洛法），在“风险-收益”坐标系中连成的一条曲线。<br><span style="color: #444; font-weight: bold;">[意义]</span> 曲线上的点代表了当前资产组合在数学上的极限最优解。</td></tr></tbody></table></div>"""
 
 
 def _suggest_text(dataset: str, risk: str, weights: Dict[str, float]) -> str:
@@ -252,762 +253,506 @@ def _suggest_text(dataset: str, risk: str, weights: Dict[str, float]) -> str:
     return f"{risk}风险偏好下，当前最高权重为 {top[0]}={top[1]:.0%}。"
 
 
+def _plot_efficient_frontier(ret_sel: pd.DataFrame, sim_count: int = 5000):
+    """
+    Step 4: 影子博弈图表 - 开发中栏 Plotly 有效边界图
+    """
+    from portfolio import optimize_monte_carlo
+    
+    # 运行蒙特卡洛模拟获取散点数据
+    if ret_sel.empty or len(ret_sel.columns) < 2:
+        st.warning("⚠️ 资产数据不完整，无法计算有效边界。")
+        return None
+
+    try:
+        # 统一使用 pandas 的 mean 和 cov，它们默认处理 NaN (pairwise deletion)
+        # 这确保了模拟的散点簇与“当前组合”点位在同一个坐标系内
+        mu_d = ret_sel.mean().to_numpy()
+        cov_d = ret_sel.cov().to_numpy()
+        
+        # 填充 NaN 为 0 防止矩阵运算崩溃
+        mu_d = np.nan_to_num(mu_d)
+        cov_d = np.nan_to_num(cov_d)
+
+        trading_days = 252
+        
+        rng = np.random.default_rng(42)
+        w_all = rng.dirichlet(alpha=np.ones(len(ret_sel.columns)), size=sim_count)
+        
+        # 计算年化收益 and 波动
+        mu_a = (w_all @ mu_d) * trading_days
+        var_a = np.einsum("ij,jk,ik->i", w_all, cov_d, w_all) * trading_days
+        vol_a = np.sqrt(np.maximum(var_a, 0.0))
+        
+        # 避免除以 0
+        sharpe = np.zeros_like(mu_a)
+        mask = vol_a > 1e-6
+        sharpe[mask] = mu_a[mask] / vol_a[mask]
+        
+        if len(vol_a) == 0 or np.all(np.isnan(vol_a)):
+            return None
+
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        
+        # 绘制模拟散点
+        fig.add_trace(go.Scatter(
+            x=vol_a, y=mu_a,
+            mode='markers',
+            marker=dict(
+                color=sharpe,
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title="夏普比率"),
+                size=5,
+                opacity=0.3
+            ),
+            name="模拟组合",
+            hovertemplate="波动率: %{x:.2%}<br>预期收益: %{y:.2%}<br>夏普比率: %{marker.color:.2f}"
+        ))
+        
+        # 找到特殊点
+        if not np.all(np.isnan(sharpe)):
+            idx_max_sharpe = np.nanargmax(sharpe)
+            fig.add_trace(go.Scatter(
+                x=[vol_a[idx_max_sharpe]], y=[mu_a[idx_max_sharpe]],
+                mode='markers',
+                marker=dict(color='red', size=15, symbol='star'),
+                name="最大夏普点 (最优解)",
+                hovertemplate="<b>最优建议点</b><br>波动率: %{x:.2%}<br>收益: %{y:.2%}"
+            ))
+            
+        if not np.all(np.isnan(vol_a)):
+            idx_min_vol = np.nanargmin(vol_a)
+            fig.add_trace(go.Scatter(
+                x=[vol_a[idx_min_vol]], y=[mu_a[idx_min_vol]],
+                mode='markers',
+                marker=dict(color='blue', size=12, symbol='circle'),
+                name="最小波动点 (保守解)"
+            ))
+
+        fig.update_layout(
+            xaxis_title="年化波动率 (风险血压)",
+            yaxis_title="年化收益率 (营养摄入)",
+            template="plotly_white",
+            height=500,
+            margin=dict(l=20, r=20, t=40, b=20),
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+        )
+        
+        return fig
+    except Exception as e:
+        st.error(f"有效边界计算失败: {e}")
+        return None
+
+def _rebalance_weights(changed_sym: str, new_val: float, current_weights: Dict[str, float], active_symbols: List[str]):
+    """
+    当一个资产权重改变时，按比例调整其他资产权重，使总和保持为 1.0。
+    """
+    if len(active_symbols) <= 1:
+        return {active_symbols[0]: 1.0} if active_symbols else {}
+    
+    new_weights = current_weights.copy()
+    new_weights[changed_sym] = new_val
+    
+    other_symbols = [s for s in active_symbols if s != changed_sym]
+    other_sum = sum(current_weights.get(s, 0.0) for s in other_symbols)
+    
+    target_other_sum = 1.0 - new_val
+    
+    if other_sum > 0:
+        for s in other_symbols:
+            new_weights[s] = (current_weights.get(s, 0.0) / other_sum) * target_other_sum
+    else:
+        # 如果原来其他权重都是0，则平分剩余权重
+        for s in other_symbols:
+            new_weights[s] = target_other_sum / len(other_symbols)
+            
+    return new_weights
+
+
 def main():
-    st.set_page_config(page_title="Ass1 跨资产对比分析", layout="wide")
+    # Step 1: 核心框架搭建 - 配置三栏布局
+    st.set_page_config(page_title="金融智能投资组合优化系统", layout="wide")
+    
+    # 自定义 CSS 实现资产泡泡样式及健康卡片动画
+    st.markdown("""
+        <style>
+        .asset-bubble {
+            display: inline-block;
+            padding: 5px 12px;
+            margin: 4px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.3s;
+            border: 1px solid #ddd;
+        }
+        .asset-active {
+            background-color: #2e7d32;
+            color: white;
+            border-color: #1b5e20;
+        }
+        .asset-inactive {
+            background-color: #f5f5f5;
+            color: #9e9e9e;
+            border-color: #e0e0e0;
+        }
+        /* 血压计高压闪烁动画 */
+        @keyframes blink {
+            0% { opacity: 1; border-color: red; }
+            50% { opacity: 0.5; border-color: darkred; }
+            100% { opacity: 1; border-color: red; }
+        }
+        .high-vol-blink {
+            animation: blink 1s infinite;
+            border-width: 15px !important;
+        }
+        /* 状态灯样式 */
+        .status-light {
+            height: 12px;
+            width: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .light-green { background-color: #00ff00; }
+        .light-yellow { background-color: #ffff00; }
+        .light-red { background-color: #ff0000; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 初始化 Session State
+    if 'active_assets' not in st.session_state:
+        st.session_state['active_assets'] = []
+    if 'status_code' not in st.session_state:
+        st.session_state['status_code'] = 0 # 0: 绿, 1: 黄, 2: 红
+    if 'user_weights' not in st.session_state:
+        st.session_state['user_weights'] = {}
+
     data = _load_data()
     models = _load_models()
-
-    st.sidebar.title("设置")
     
-    # Debugging: Show model timestamp
-    if models and "meta" in models:
-        gen_time = models["meta"].get("generated_at", "Unknown")
-        st.sidebar.caption(f"模型生成时间 (UTC):\n{gen_time}")
-        
-    if st.sidebar.button("清除缓存 (Reload Data)"):
-        st.cache_data.clear()
-        st.rerun()
+    # 侧边栏保持原有功能，但增加 Step 1 要求的参数引擎
+    st.sidebar.title("🛠️ 参数引擎 (Control Suite)")
+    
+    # 1. 资产泡泡组件 (Asset Bubbles)
+    st.sidebar.subheader("资产选择 (Asset Bubbles)")
+    close_all = data["close_universe"]
+    all_symbols = list(close_all.columns)
+    
+    if not st.session_state.get('active_assets'):
+        st.session_state['active_assets'] = all_symbols
 
-    dataset = st.sidebar.radio(
-        "数据集",
-        options=["universe", "stocks", "assets"],
-        index=0,
-        format_func=lambda x: "12种资产（10股票+SPY+AU0）" if x == "universe" else ("10只股票" if x == "stocks" else "SPY+AU0"),
-    )
+    # 渲染资产泡泡
+    cols_bubbles = st.sidebar.columns(3) # 改为 3 列以适应侧边栏宽度
+    for i, sym in enumerate(all_symbols):
+        is_active = sym in st.session_state['active_assets']
+        btn_type = "primary" if is_active else "secondary"
+        if cols_bubbles[i % 3].button(f"{sym}", key=f"bubble_{sym}", type=btn_type, use_container_width=True):
+            if is_active:
+                if len(st.session_state['active_assets']) > 1: # 至少保留一个资产
+                    st.session_state['active_assets'].remove(sym)
+                else:
+                    st.toast("⚠️ 至少需选择一个资产")
+            else:
+                st.session_state['active_assets'].append(sym)
+            st.rerun()
 
-    # Model selection
+    # 2. 动作按钮
     st.sidebar.markdown("---")
-    st.sidebar.subheader("预测模型")
-    model_options = ["Naive + LightGBM", "Naive", "LightGBM"]
+    col_add, col_del = st.sidebar.columns(2)
+    with col_add:
+        if st.button("➕ 新增", type="secondary", use_container_width=True):
+            st.toast("正在集成异步下载功能 (Step 2)...")
+    with col_del:
+        if st.button("➖ 删除", type="primary", use_container_width=True):
+            st.toast("激活删除模式：点击上方泡泡即可移除")
 
-    selected_model = st.sidebar.radio(
-        "选择模型",
-        options=model_options,
-        index=0
+    # 3. 偏好参数
+    st.sidebar.markdown("---")
+    risk_val = st.sidebar.select_slider("风险偏好 (1-5)", options=[1, 2, 3, 4, 5], value=3)
+    roll_window = st.sidebar.number_input("滚动窗口 (天)", min_value=5, max_value=252, value=30)
+    sim_count = st.sidebar.slider("模拟次数", min_value=1000, max_value=100000, value=50000, step=1000)
+
+    # 4. 初始化/更新权重逻辑
+    risk_map = {1: "低", 2: "低", 3: "中", 4: "高", 5: "高"}
+    risk_str = risk_map[risk_val]
+    
+    # 如果风险偏好改变，重置权重
+    if 'last_risk_val' not in st.session_state:
+        st.session_state['last_risk_val'] = risk_val
+    
+    if st.session_state['last_risk_val'] != risk_val:
+        st.session_state['user_weights'] = _recommend_weights(models, "universe", risk_str)
+        st.session_state['last_risk_val'] = risk_val
+
+    if not st.session_state.get('user_weights'):
+        st.session_state['user_weights'] = _recommend_weights(models, "universe", risk_str)
+
+    # Calculate metrics for the selected assets
+    selected = st.session_state['active_assets']
+    close_sel = _subset_close(data["close_universe"], selected)
+    ret_sel = daily_returns(close_sel).dropna(how="all")
+    metrics_df = annual_metrics(ret_sel)
+    corr_df = corr_matrix(ret_sel)
+    
+    # 权重联动回调函数
+    def on_weight_change(sym=None):
+        # 如果是通过 data_editor 改变的，sym 为 None
+        if sym is None:
+            # 获取 data_editor 的更新
+            if "weight_editor" in st.session_state:
+                edited_df = st.session_state["weight_editor"]["edited_rows"]
+                # 处理数据编辑器的更新
+                pass # 这种方式比较复杂，我们直接在主逻辑中处理数据编辑器
+        else:
+            # 兼容旧逻辑
+            side_key = f"side_w_{sym}"
+            mid_key = f"mid_w_{sym}"
+            old_val = st.session_state['user_weights'].get(sym, 0.0)
+            new_val_side = st.session_state.get(side_key, old_val)
+            new_val_mid = st.session_state.get(mid_key, old_val)
+            new_val = new_val_side if new_val_side != old_val else new_val_mid
+            st.session_state['user_weights'] = _rebalance_weights(sym, new_val, st.session_state['user_weights'], selected)
+
+    # 计算组合层面指标 (Portfolio Metrics)
+    user_w_dict = st.session_state['user_weights']
+    active_w = {s: user_w_dict.get(s, 0.0) for s in selected}
+    w_sum = sum(active_w.values())
+    if w_sum > 0:
+        for s in selected:
+            st.session_state['user_weights'][s] = active_w[s] / w_sum
+        w_arr = np.array([st.session_state['user_weights'][s] for s in selected])
+        from portfolio import _portfolio_stats
+        mu_p_ann, vol_p_ann, sharpe_p = _portfolio_stats(ret_sel.mean().values, ret_sel.cov().values, w_arr)
+    else:
+        for s in selected:
+            st.session_state['user_weights'][s] = 1.0 / len(selected)
+        mu_p_ann, vol_p_ann, sharpe_p = 0.0, 0.0, 0.0
+
+    # 左栏资产配置面板 (改为饼图 + 数据编辑器)
+    st.sidebar.subheader("资产配比 (Weights)")
+    weight_df = pd.DataFrame([
+        {"资产": s, "权重 (%)": float(st.session_state['user_weights'].get(s, 0.0)) * 100} 
+        for s in selected
+    ])
+    
+    # 侧边栏饼图展示
+    fig_side_pie = px.pie(weight_df, values="权重 (%)", names="资产", hole=0.4)
+    fig_side_pie.update_layout(showlegend=False, height=250, margin=dict(l=0, r=0, t=0, b=0))
+    st.sidebar.plotly_chart(fig_side_pie, use_container_width=True)
+
+    # 侧边栏数据编辑器
+    edited_weight_df = st.sidebar.data_editor(
+        weight_df,
+        column_config={
+            "权重 (%)": st.column_config.NumberColumn(
+                "权重 (%)",
+                help="调整资产权重 (0-100)",
+                min_value=0,
+                max_value=100,
+                step=1,
+                format="%d%%"
+            ),
+            "资产": st.column_config.TextColumn("资产", disabled=True)
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="weight_editor_sidebar"
     )
 
-    risk = st.sidebar.select_slider("风险偏好", options=["低", "中", "高"], value="中")
-    close = data["close_universe"] if dataset == "universe" else (data["close_stocks"] if dataset == "stocks" else data["close_assets"])
-    symbols_all = list(close.columns)
-    selected = st.sidebar.multiselect("资产选择器", options=symbols_all, default=symbols_all)
-    close_sel = _subset_close(close, selected)
-    ret_sel = daily_returns(close_sel).dropna(how="all")
+    # 如果数据被编辑，更新权重
+    if not weight_df.equals(edited_weight_df):
+        # 找出哪个被改了
+        for i, row in edited_weight_df.iterrows():
+            sym = row["资产"]
+            new_val = row["权重 (%)"] / 100.0
+            if new_val != weight_df.iloc[i]["权重 (%)"] / 100.0:
+                st.session_state['user_weights'] = _rebalance_weights(sym, new_val, st.session_state['user_weights'], selected)
+                st.rerun()
 
-    tab_portfolio, tab_kronos = st.tabs(["组合建议", "Kronos预测"])
-
-    # ========== 组合建议 Tab (包含5个子标签页) ==========
-    with tab_portfolio:
-        sub_tab1, sub_tab2, sub_tab3, sub_tab4, sub_tab5 = st.tabs(["数据看板", "风险分析", "预测建议", "AI 可解释性", "回测验证"])
-
-        with sub_tab1:
-            st.subheader("基础信息")
-            st.write(data["meta"])
-            st.subheader("价格数据（清洗后）")
-            st.dataframe(close_sel.tail(20))
-            st.subheader("核心统计指标（年化）")
-            st.dataframe(annual_metrics(ret_sel))
-
-        with sub_tab2:
-            st.subheader("相关性矩阵与热力图")
-            corr = corr_matrix(ret_sel)
-            st.dataframe(corr)
-            fig = _heatmap_fig(corr, "Correlation Heatmap")
-            st.plotly_chart(fig, use_container_width=True)
-            _fig_to_download(fig, f"{dataset}_corr_heatmap_selected.html")
-
-            st.subheader("归一化价格走势")
-            fig2 = _price_fig(close_sel, "Normalized Prices")
-            st.plotly_chart(fig2, use_container_width=True)
-            _fig_to_download(fig2, f"{dataset}_prices_selected.html")
-
-            st.subheader("收益率分布 KDE")
-            fig3 = _kde_fig(ret_sel, "Returns KDE")
-            st.plotly_chart(fig3, use_container_width=True)
-            _fig_to_download(fig3, f"{dataset}_returns_kde_selected.html")
-
-            st.subheader("30天滚动波动率（年化）")
-            fig4 = _rolling_vol_fig(ret_sel, "Rolling Volatility (30D)")
-            st.plotly_chart(fig4, use_container_width=True)
-            _fig_to_download(fig4, f"{dataset}_rolling_vol_selected.html")
-
-            st.subheader("夏普比率图（年化收益率 vs 年化波动率）")
-            metrics = annual_metrics(ret_sel)
-            fig5 = _sharpe_fig(metrics, "Sharpe Ratio Plot")
-            st.plotly_chart(fig5, use_container_width=True)
-            _fig_to_download(fig5, f"{dataset}_sharpe_plot_selected.html")
-
-        def _classify_value(val: float, threshold: float = 0.01) -> int:
-            if val > threshold: return 2
-            if val < -threshold: return 0
+    # 5. 系统状态逻辑 (Status Code Logic)
+    # 根据模型信号一致性更新状态灯
+    def update_status_code():
+        lgb_data = models.get("universe", {}).get("lightgbm", {})
+        if not lgb_data or not lgb_data.get("available", False):
+            return 1 # 数据缺失，黄灯警告
+        
+        cls_res = lgb_data.get("classification", {})
+        if not cls_res:
             return 1
-
-        def _naive_rolling_classify(close_series: pd.Series, window: int = 30) -> pd.Series:
-            ret = close_series.pct_change()
-            roll_mean = ret.rolling(window=window).mean().shift(1) # shift 1 to avoid lookahead
-            return roll_mean.apply(lambda x: _classify_value(x))
-
-        with sub_tab3:
-            st.subheader("预测与配置建议")
-
-            granularity = st.radio(
-                "预测颗粒度 (Prediction Granularity)",
-                options=["日收益率 (回归)", "趋势三分类 (分类)"],
-                horizontal=True
-            )
-
-            # Only show traditional models if selected
-            show_naive = selected_model in ["Naive", "Naive + LightGBM", "全部对比"]
-            show_lgb = selected_model in ["LightGBM", "Naive + LightGBM", "全部对比"]
-
-            lgb = models.get(dataset, {}).get("lightgbm", {}) if show_lgb else {}
-            naive_cls_data = models.get(dataset, {}).get("naive_classification", {}) if show_naive else {}
-
-            if granularity == "日收益率 (回归)":
-                st.markdown("**Naive 预测（过去30天均值→未来7天）**")
-                naive_rows = models.get(dataset, {}).get("naive", [])
-                naive_df = pd.DataFrame(naive_rows)
-                if not naive_df.empty and "symbol" in naive_df.columns:
-                    naive_df = naive_df.set_index("symbol").loc[[s for s in selected if s in set(naive_df["symbol"])]].reset_index()
-                st.dataframe(naive_df)
-
-                st.markdown("**LightGBM 回归预测（测试集表现）**")
-                if isinstance(lgb, dict) and lgb.get("available", False):
-                    m = lgb.get("metrics", {})
-                    rows = [{"symbol": k, **v} for k, v in m.items() if isinstance(v, dict)]
-                    lgb_df = pd.DataFrame(rows)
-                    if not lgb_df.empty:
-                        lgb_df = lgb_df.set_index("symbol").loc[[s for s in selected if s in set(lgb_df["symbol"])]].reset_index()
-                    st.dataframe(lgb_df)
-                else:
-                    st.write(f"LightGBM 未启用：{lgb.get('error','')}")
-
-                st.subheader("最终权重（饼图 + 数组格式）")
-                w_base = _recommend_weights(models, dataset, risk)
-                w = _renorm_subset(w_base, selected)
-                figw = _weight_fig(w, f"Weights ({dataset}, {risk}风险)")
-                st.plotly_chart(figw, use_container_width=True)
-                _fig_to_download(figw, f"{dataset}_weights_{risk}_selected.html")
-
-                order = [s for s in symbols_all if s in set(selected)]
-                st.code(_weights_array_text(order, w), language="text")
-
-                if dataset == "universe":
-                    st.code(_weights_array_text(["SPY", "AU0"], w), language="text")
-                    st.code(_weights_array_text([s for s in order if s not in ["SPY", "AU0"]], w), language="text")
-
-            else:  # Classification Mode
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.markdown("### LightGBM 预测")
-                    if isinstance(lgb, dict) and lgb.get("available", False):
-                        cls_res = lgb.get("classification", {})
-                        if cls_res:
-                            cls_rows = []
-                            for sym, res in cls_res.items():
-                                if sym not in selected: continue
-                                last_class = res["pred_classes"][-1]
-                                probs = res["pred_probs"][-1]
-                                cls_label = ["大跌", "震荡", "大涨"][last_class]
-                                cls_rows.append({
-                                    "Symbol": sym, "Pred": cls_label,
-                                    "Prob(Up)": f"{probs[2]:.1%}", "Acc": f"{res['accuracy']:.1%}"
-                                })
-                            st.dataframe(pd.DataFrame(cls_rows))
-                        else:
-                            st.warning("LightGBM分类数据缺失")
-                    else:
-                        st.warning("LightGBM不可用")
-
-                with col2:
-                    st.markdown("### Naive 预测")
-                    if naive_cls_data:
-                        n_rows = []
-                        for sym, res in naive_cls_data.items():
-                            if sym not in selected: continue
-                            pred = res.get("pred_class", 1)
-                            probs = res.get("pred_probs", [0,0,0])
-                            label = ["大跌", "震荡", "大涨"][pred]
-                            n_rows.append({
-                                "Symbol": sym, "Pred": label,
-                                "Prob(Up)": f"{probs[2]:.1%}", "Desc": res.get("description", "")
-                            })
-                        st.dataframe(pd.DataFrame(n_rows))
-                    else:
-                        st.warning("Naive分类数据缺失")
-
-                st.markdown("---")
-
-                st.subheader("模型与现实情况对比 (测试集可视化)")
-
-                viz_sym = st.selectbox("选择资产进行对比", options=selected, key="cls_viz_sym")
-
-                # Prepare data for visualization
-                if isinstance(lgb, dict) and lgb.get("available", False):
-                    cls_res = lgb.get("classification", {})
-                    lgb_sym_data = cls_res.get(viz_sym, {})
-
-                    if lgb_sym_data:
-                        dates = lgb_sym_data.get("dates", [])
-                        true_cls = lgb_sym_data.get("true_classes", [])
-                        lgb_pred = lgb_sym_data.get("pred_classes", [])
-
-                        # Compute Naive predictions on the same dates
-                        # Use close prices from data['close_universe/stocks/assets']
-                        close_df = close_sel[viz_sym] if viz_sym in close_sel.columns else None
-                        if close_df is not None:
-                            naive_series = _naive_rolling_classify(close_df)
-                            # Filter to match test dates
-                            naive_pred = []
-                            valid_dates = []
-                            valid_true = []
-                            valid_lgb = []
-
-                            for i, d_str in enumerate(dates):
-                                try:
-                                    d = pd.to_datetime(d_str)
-                                    if d in naive_series.index:
-                                        naive_pred.append(naive_series.loc[d])
-                                        valid_dates.append(d_str)
-                                        valid_true.append(true_cls[i])
-                                        valid_lgb.append(lgb_pred[i])
-                                except:
-                                    continue
-
-                            if valid_dates:
-                                # Create heatmap data
-                                # Map classes to values: 0->-1, 1->0, 2->1 for color scale
-                                map_val = {0: -1, 1: 0, 2: 1}
-
-                                fig_heat = go.Figure(data=go.Heatmap(
-                                    z=[
-                                        [map_val[x] for x in valid_true],
-                                        [map_val[x] for x in valid_lgb],
-                                        [map_val[x] for x in naive_pred]
-                                    ],
-                                    x=valid_dates,
-                                    y=['Real (真实)', 'LightGBM', 'Naive'],
-                                    colorscale=[[0, 'red'], [0.5, 'lightgray'], [1, 'green']],
-                                    showscale=False
-                                ))
-                                fig_heat.update_layout(
-                                    title=f"{viz_sym} 分类预测对比 (绿=涨, 红=跌, 灰=震荡)",
-                                    height=300
-                                )
-                                st.plotly_chart(fig_heat, use_container_width=True)
-
-                                # Confusion Matrix for LightGBM
-                                st.markdown("**混淆矩阵 (LightGBM vs Real)**")
-                                from sklearn.metrics import confusion_matrix
-                                cm = confusion_matrix(valid_true, valid_lgb, labels=[0, 1, 2])
-                                cm_df = pd.DataFrame(cm, index=["Real:跌", "Real:平", "Real:涨"], columns=["Pred:跌", "Pred:平", "Pred:涨"])
-                                st.table(cm_df)
-
-                st.info("注：分类阈值为 +/- 1%。")
-
-            st.subheader("文字建议（推导全过程）")
-        metrics = annual_metrics(ret_sel)
-        corr = corr_matrix(ret_sel)
-        # Pass empty weights if classification mode to avoid confusion in text generation, 
-        # or keep original weights but add disclaimer. Here we keep original for context.
-        w_base = _recommend_weights(models, dataset, risk)
-        w = _renorm_subset(w_base, selected)
-        st.markdown(_build_explain(dataset, risk, selected, data["raw"], metrics, corr, models, w), unsafe_allow_html=True)
-
-        with sub_tab4:
-            st.subheader("LightGBM 特征重要性分析")
-            lgb_data = models.get(dataset, {}).get("lightgbm", {})
-
-            if not lgb_data.get("available", False):
-                st.warning("LightGBM 模型未启用，无法展示特征重要性。")
-            else:
-                # Dropdown to select symbol
-                feat_sym = st.selectbox("选择资产查看特征贡献", options=selected, key="feat_imp_sym")
-
-                # Get feature importance for selected symbol
-                fi_data = lgb_data.get("models", {}).get(feat_sym, {})
-                names = fi_data.get("feature_names", [])
-                importance = fi_data.get("feature_importances", [])
             
-            if names and importance:
-                fi_df = pd.DataFrame({"Feature": names, "Importance": importance})
-                fi_df = fi_df.sort_values("Importance", ascending=True)
-                
-                fig_fi = px.bar(
-                    fi_df, 
-                    x="Importance", 
-                    y="Feature", 
-                    orientation='h',
-                    title=f"Feature Importance for {feat_sym}",
-                    height=600
-                )
-                st.plotly_chart(fig_fi, use_container_width=True)
-                
-                st.markdown("""
-                **解读指南：**
-                - **Lag (滞后项)**: 代表过去几天的收益率。Lag_1 是昨天，Lag_2 是前天。
-                - **Rolling Mean (滚动均值)**: 代表过去一段时间（5/10/20天）的平均收益水平。
-                - **Rolling Std (滚动波动)**: 代表风险水平。
-                - **Momentum (动量)**: 代表累计涨跌幅。
-                """)
-            else:
-                st.info(f"未找到 {feat_sym} 的特征重要性数据。")
+        # 简单逻辑：根据资产的平均预测准确率来决定系统灯
+        # 如果选中资产的平均准确度低于 50%，设为黄灯；低于 40%，设为红灯
+        if not selected:
+            return 0
+            
+        accs = []
+        for sym in selected:
+            res = cls_res.get(sym, {})
+            # 如果模型没有该资产的预测，默认给 0.5 (中立)
+            accs.append(res.get("accuracy", 0.5))
+        
+        avg_acc = sum(accs) / len(accs)
+        
+        if avg_acc < 0.4:
+            return 2 # 红灯：模型不可靠
+        elif avg_acc < 0.55:
+            return 1 # 黄灯：建议谨慎
+        return 0 # 绿灯：系统运行稳健
 
-        with sub_tab5:
-            st.subheader("模型回测验证 (2025-02-01 ~ 2025-02-08)")
+    st.session_state['status_code'] = update_status_code()
 
-            # Load backtest results
-            backtest_path = os.path.join(_paths()[0], "backtest_results.json")
-            if os.path.exists(backtest_path):
-                with open(backtest_path, "r", encoding="utf-8") as f:
-                    bt_results = json.load(f)
+    # 核心布局：参数(侧边)、沙盘(中)、评估(右)
+    col_mid, col_right = st.columns([2, 1])
 
-                scope_res = bt_results.get(dataset, {})
-                dates = scope_res.get("dates", [])
-                comparison = scope_res.get("comparison", {})
+    with col_mid:
+        st.title("🏗️ 决策沙盘 (Decision Sandbox)")
+        
+        # 状态层（Overlay）
+        status_colors = {0: "#00FF0033", 1: "#FFFF0033", 2: "#FF000033"}
+        status_labels = {0: "🟢 系统运行稳健", 1: "🟡 建议谨慎操作", 2: "🔴 逻辑严重紊乱"}
+        
+        st.markdown(f"""
+            <div style="background-color: {status_colors[st.session_state['status_code']]}; padding: 15px; border-radius: 10px; border: 2px solid #ddd; margin-bottom: 20px;">
+                <h3 style="margin:0;">{status_labels[st.session_state['status_code']]}</h3>
+                <p style="margin:5px 0 0 0;">{ "当前模型信号一致，建议参考最优解。" if st.session_state['status_code'] == 0 else ("市场波动剧烈，建议降低总仓位至 30% 以下。" if st.session_state['status_code'] == 1 else "模型间存在严重信号冲突，请谨慎参考以下预测数据。") }</p>
+            </div>
+        """, unsafe_allow_html=True)
 
-                if not dates:
-                    st.warning("回测数据为空，请检查 analyze_backtest.py 是否成功运行。")
-                else:
-                    bt_sym = st.selectbox("选择资产查看回测详情", options=selected, key="bt_sym")
-
-                    comp_data = comparison.get(bt_sym, {})
-                    if comp_data:
-                        # Metrics Table
-                        nm = comp_data.get("naive_metrics", {})
-                        lm = comp_data.get("lgb_metrics", {})
-
-                        met_df = pd.DataFrame({
-                            "Metric": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "累计收益差"],
-                            "Naive": [nm.get("mae"), nm.get("rmse"), nm.get("cum_diff")],
-                            "LightGBM": [lm.get("mae"), lm.get("rmse"), lm.get("cum_diff")]
-                        })
-                        st.table(met_df)
-
-                        # Plot
-                        real_vals = comp_data.get("real", [])
-                        naive_vals = comp_data.get("naive_pred", [])
-                        lgb_vals = comp_data.get("lgb_pred", [])
-
-                        # Cumulative Return
-                        real_cum = [np.prod(1 + np.array(real_vals[:i+1])) - 1 for i in range(len(real_vals))]
-                        naive_cum = [np.prod(1 + np.array(naive_vals[:i+1])) - 1 for i in range(len(naive_vals))]
-                        lgb_cum = [np.prod(1 + np.array(lgb_vals[:i+1])) - 1 for i in range(len(lgb_vals))]
-
-                        chart_df = pd.DataFrame({
-                            "Date": dates,
-                            "实际": real_cum,
-                            "Naive": naive_cum,
-                            "LightGBM": lgb_cum
-                        })
-
-                        fig_bt = px.line(chart_df, x="Date", y=["实际", "Naive", "LightGBM"],
-                                         title=f"{bt_sym} 累计收益回测对比 (Cumulative Return)",
-                                         markers=True)
-                        st.plotly_chart(fig_bt, use_container_width=True)
-
-                        st.markdown("""
-                        **图表说明：**
-                        - **实际 (蓝色)**: 真实发生的市场累计收益。
-                        - **Naive (红色)**: 基于过去30天均值的线性预测。
-                        - **LightGBM (绿色)**: 机器学习模型的动态预测。
-                        """)
+        # 移除决策锁定逻辑
+        # if st.session_state['status_code'] == 2:
+        #     st.stop()
+        
+        # 影子博弈布局
+        sandbox_col1, sandbox_col2 = st.columns([1, 1.5])
+        
+        with sandbox_col1:
+            st.subheader("资产配置与预测")
+            # 每一行显示一个资产：状态灯、精简预测条
+            for sym in selected:
+                with st.container():
+                    # 状态灯与精简预测条
+                    mu_sim = ret_sel[sym].mean() if sym in ret_sel.columns else 0.0
+                    sigma_sim = ret_sel[sym].std() if sym in ret_sel.columns else 0.01
+                    prob_text = get_prob_summary(mu_sim, sigma_sim)
+                    
+                    # 获取该资产的模型准确率
+                    lgb_res = models.get("universe", {}).get("lightgbm", {}).get("classification", {}).get(sym, {})
+                    acc = lgb_res.get("accuracy", 1.0)
+                    
+                    if acc < 0.4:
+                        light_class = "light-red"
+                    elif acc < 0.6:
+                        light_class = "light-yellow"
                     else:
-                        st.info(f"未找到 {bt_sym} 的回测数据。")
+                        light_class = "light-green"
+                    
+                    st.markdown(f"""
+                        <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                            <div style="width: 80px; font-weight: bold;">{sym}</div>
+                            <span class="status-light {light_class}"></span>
+                            <div style="background-color: #f0f2f6; padding: 5px 10px; border-radius: 5px; font-family: monospace; font-size: 0.85em; flex-grow: 1;">
+                                {prob_text}
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
 
-                # ========== 组合层面回测 ==========
-                st.markdown("---")
-                st.subheader("📊 整个组合的回测验证")
+        with sandbox_col2:
+            st.subheader("📊 影子博弈 (Efficient Frontier)")
+            fig_frontier = _plot_efficient_frontier(ret_sel, sim_count=sim_count)
+            if fig_frontier:
+                # 引力感点位
+                user_w_arr = np.array([st.session_state['user_weights'].get(s, 0.0) for s in selected])
+                if np.sum(user_w_arr) > 0:
+                    user_w_arr = user_w_arr / np.sum(user_w_arr)
+                    from portfolio import _portfolio_stats
+                    
+                    # 关键修复：_portfolio_stats 返回的已经是年化指标，无需再次乘以 252
+                    mu_user, vol_user, _ = _portfolio_stats(ret_sel.mean().values, ret_sel.cov().values, user_w_arr)
+                    fig_frontier.add_trace(go.Scatter(
+                        x=[vol_user], y=[mu_user],
+                        mode='markers+text', marker=dict(color='orange', size=12, symbol='x'),
+                        name="当前组合", text=["你的位置"], textposition="top center"
+                    ))
+                st.plotly_chart(fig_frontier, use_container_width=True)
+                st.info("💡 **引力感提示**：红星代表系统建议的最优解。若您的组合偏离过远，建议向红星靠拢。")
 
-                portfolio_data = scope_res.get("portfolio", {})
-                if portfolio_data:
-                    # 选择风险偏好
-                    risk_profile_map = {"低": "min_vol", "高": "max_sharpe", "中": "min_vol"}
-                    # 根据当前选择的风险偏好确定要展示的组合
-                    selected_profile = risk_profile_map.get(risk, "min_vol")
-
-                    # 如果当前是中风险，计算 min_vol 和 max_sharpe 的等权平均
-                    if risk == "中" and "min_vol" in portfolio_data and "max_sharpe" in portfolio_data:
-                        st.caption("当前显示: 中风险偏好 (最小波动 + 最大夏普等权组合)")
-                        pv_min = portfolio_data["min_vol"]
-                        pv_max = portfolio_data["max_sharpe"]
-
-                        # 计算平均组合收益率
-                        portfolio_real = [(a + b) / 2 for a, b in zip(pv_min["real"], pv_max["real"])]
-                        portfolio_naive = [(a + b) / 2 for a, b in zip(pv_min["naive_pred"], pv_max["naive_pred"])]
-                        portfolio_lgb = [(a + b) / 2 for a, b in zip(pv_min["lgb_pred"], pv_max["lgb_pred"])]
-
-                        # 显示权重配置
-                        st.markdown("**组合权重配置**")
-                        weights_df = pd.DataFrame({
-                            "标的": list(pv_min["weights"].keys()),
-                            "低风险权重": [f"{pv_min['weights'].get(k, 0):.2%}" for k in pv_min["weights"].keys()],
-                            "高风险权重": [f"{pv_max['weights'].get(k, 0):.2%}" for k in pv_min["weights"].keys()]
-                        })
-                        st.dataframe(weights_df)
-
-                    elif selected_profile in portfolio_data:
-                        profile_name = "低风险(最小波动)" if selected_profile == "min_vol" else "高风险(最大夏普)"
-                        st.caption(f"当前显示: {profile_name}组合")
-                        pv = portfolio_data[selected_profile]
-
-                        portfolio_real = pv["real"]
-                        portfolio_naive = pv["naive_pred"]
-                        portfolio_lgb = pv["lgb_pred"]
-
-                        # 显示权重配置
-                        st.markdown("**组合权重配置**")
-                        weights_df = pd.DataFrame({
-                            "标的": list(pv["weights"].keys()),
-                            "权重": [f"{v:.2%}" for v in pv["weights"].values()]
-                        }).sort_values("权重", ascending=False)
-                        st.dataframe(weights_df)
-                    else:
-                        st.warning("未找到对应风险偏好的组合数据。")
-                        portfolio_real = portfolio_naive = portfolio_lgb = []
-
-                    if portfolio_real:
-                        # 计算累计收益
-                        portfolio_real_cum = [np.prod(1 + np.array(portfolio_real[:i+1])) - 1 for i in range(len(portfolio_real))]
-                        portfolio_naive_cum = [np.prod(1 + np.array(portfolio_naive[:i+1])) - 1 for i in range(len(portfolio_naive))]
-                        portfolio_lgb_cum = [np.prod(1 + np.array(portfolio_lgb[:i+1])) - 1 for i in range(len(portfolio_lgb))]
-
-                        # 显示组合回测指标
-                        if risk == "中":
-                            pv_min = portfolio_data["min_vol"]
-                            pv_max = portfolio_data["max_sharpe"]
-                            metrics_df = pd.DataFrame({
-                                "指标": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "最终累计收益"],
-                                "Naive": [
-                                    f"{(pv_min['metrics']['naive']['mae'] + pv_max['metrics']['naive']['mae'])/2:.4f}",
-                                    f"{(pv_min['metrics']['naive']['rmse'] + pv_max['metrics']['naive']['rmse'])/2:.4f}",
-                                    f"{portfolio_naive_cum[-1]:.2%}"
-                                ],
-                                "LightGBM": [
-                                    f"{(pv_min['metrics']['lgb']['mae'] + pv_max['metrics']['lgb']['mae'])/2:.4f}",
-                                    f"{(pv_min['metrics']['lgb']['rmse'] + pv_max['metrics']['lgb']['rmse'])/2:.4f}",
-                                    f"{portfolio_lgb_cum[-1]:.2%}"
-                                ],
-                                "实际": ["-", "-", f"{portfolio_real_cum[-1]:.2%}"]
-                            })
-                        else:
-                            pv = portfolio_data.get(selected_profile, {})
-                            m_naive = pv.get("metrics", {}).get("naive", {})
-                            m_lgb = pv.get("metrics", {}).get("lgb", {})
-                            metrics_df = pd.DataFrame({
-                                "指标": ["MAE (平均绝对误差)", "RMSE (均方根误差)", "最终累计收益"],
-                                "Naive": [f"{m_naive.get('mae', 0):.4f}", f"{m_naive.get('rmse', 0):.4f}", f"{portfolio_naive_cum[-1]:.2%}"],
-                                "LightGBM": [f"{m_lgb.get('mae', 0):.4f}", f"{m_lgb.get('rmse', 0):.4f}", f"{portfolio_lgb_cum[-1]:.2%}"],
-                                "实际": ["-", "-", f"{portfolio_real_cum[-1]:.2%}"]
-                            })
-                        st.table(metrics_df)
-
-                        # 绘制组合累计收益图
-                        chart_df_portfolio = pd.DataFrame({
-                            "Date": dates,
-                            "实际": portfolio_real_cum,
-                            "Naive": portfolio_naive_cum,
-                            "LightGBM": portfolio_lgb_cum
-                        })
-
-                        fig_portfolio = px.line(chart_df_portfolio, x="Date", y=["实际", "Naive", "LightGBM"],
-                                                 title=f"整个组合累计收益回测对比 ({risk}风险偏好)",
-                                                 markers=True)
-                        st.plotly_chart(fig_portfolio, use_container_width=True)
-
-                        st.markdown("""
-                        **组合回测说明：**
-                        - **实际 (蓝色)**: 组合的实际累计收益（按优化权重加权各资产真实收益）。
-                        - **Naive (红色)**: 基于过去30天均值预测的组合收益。
-                        - **LightGBM (绿色)**: LightGBM预测的组合收益。
-                        - 组合权重根据您选择的"风险偏好"从优化结果中获取。
-                        """)
-                else:
-                    st.info("未找到组合层面回测数据。请重新运行 `python analyze_backtest.py` 生成。")
-            else:
-                st.error("未找到 backtest_results.json 文件。请运行 `python analyze_backtest.py`。")
-
-    # ========== Kronos 预测 Tab (独立标签) ==========
-    with tab_kronos:
-        st.header("🧠 Kronos 深度学习预测")
-        st.markdown("""
-        **Kronos** 是专门用于金融时序预测的基础模型 (Foundation Model)。
-
-        您可以上传自己的股票数据 CSV 文件，Kronos 将基于历史 K 线数据预测未来走势。
-        """)
-
-        # Check Kronos availability
-        if not KRONOS_AVAILABLE:
-            st.error("❌ Kronos 模型未安装或加载失败。请检查 kronos_model/ 目录是否存在。")
-            st.info("如果需要使用 Kronos，请从 Kronos-master 项目复制 model/ 目录到当前目录。")
+    with col_right:
+        st.title("📋 健康卡片 (Health Card)")
+        
+        # 1. 血压计 (Volatility)
+        st.subheader("💓 血压计 (Volatility)")
+        vol = vol_p_ann # 使用组合年化波动率
+        vol_color = "red" if vol > 0.3 else ("orange" if vol > 0.15 else "green")
+        blink_class = "high-vol-blink" if vol > 0.3 else ""
+        st.markdown(f"""
+            <div class="{blink_class}" style="padding: 20px; border-radius: 50%; width: 140px; height: 140px; border: 10px solid {vol_color}; display: flex; align-items: center; justify-content: center; margin: auto;">
+                <div style="text-align: center;">
+                    <div style="font-size: 1.8em; font-weight: bold;">{vol:.1%}</div>
+                    <div style="font-size: 0.7em; color: gray;">组合年化波动</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # 血压计医嘱
+        st.markdown(f"""
+            <div style="background-color: #fff4f4; padding: 10px; border-radius: 8px; margin-top: 10px; font-size: 0.9em;">
+                <strong>当前状态：</strong>{ "你的组合目前像是在暴风雨中的小船，起伏剧烈。" if vol > 0.3 else "目前组合生命体征平稳，风险控制良好。" }<br>
+                <strong>核心病因：</strong>{ "资产配置过于集中或选择了高波动标的，缺乏避震缓冲。" if vol > 0.3 else "当前的权重分配有效抵消了单一风险。" }<br>
+                <strong>行动处方：</strong>{ "建议增加低相关性资产（如黄金）的占比，降低组合总血压。" if vol > 0.3 else "继续保持当前的平衡态势。" }
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # 2. 免疫热图 (Correlation)
+        st.subheader("🛡️ 免疫热图 (Correlation)")
+        # 仅显示权重 > 0 的资产，实现动态同步
+        active_symbols_with_weight = [s for s in selected if user_w_dict.get(s, 0.0) > 0]
+        if active_symbols_with_weight:
+            filtered_corr = corr_df.loc[active_symbols_with_weight, active_symbols_with_weight]
+            fig_corr = _heatmap_fig(filtered_corr, "")
+            st.plotly_chart(fig_corr, use_container_width=True)
+            
+            # 免疫热图医嘱
+            avg_corr = filtered_corr.mean().mean()
         else:
-            st.success("✅ Kronos 模型已就绪")
+            st.info("请先分配资产权重以查看免疫系统表现。")
+            avg_corr = 0
+        st.markdown(f"""
+            <div style="background-color: #f0fdf4; padding: 10px; border-radius: 8px; margin-top: 10px; font-size: 0.9em;">
+                <strong>当前状态：</strong>{ "资产间高度同步，一旦感冒就会集体发烧。" if avg_corr > 0.5 else "各器官免疫系统独立，具备良好的抗风险屏障。" }<br>
+                <strong>核心病因：</strong>{ "所选标的行业过于集中，缺乏分散化。" if avg_corr > 0.5 else "资产种类丰富，互不干扰。" }<br>
+                <strong>行动处方：</strong>{ "引入与当前组合负相关的资产，增强系统免疫力。" if avg_corr > 0.5 else "目前的隔离措施很到位。" }
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # 3. 代谢曲线 (Sharpe)
+        st.subheader("🔄 代谢曲线 (Sharpe)")
+        # 这里展示组合的 Sharpe 和 收益率
+        st.metric("组合年化收益 (营养摄入)", f"{mu_p_ann:.1%}")
+        st.metric("组合夏普比率 (代谢效率)", f"{sharpe_p:.2f}")
+        
+        # 代谢曲线医嘱
+        avg_sharpe = sharpe_p
+        st.markdown(f"""
+            <div style="background-color: #f0f7ff; padding: 10px; border-radius: 8px; margin-top: 10px; font-size: 0.9em;">
+                <strong>当前状态：</strong>{ "目前的营养转化效率极低，每一份风险并没有换回相应的回报。" if avg_sharpe < 0.5 else "身体吸收能力很强，投入的每一份风险都在转化为实打实的收益。" }<br>
+                <strong>核心病因：</strong>{ "风险收益比失衡，代谢效率低下。" if avg_sharpe < 0.5 else "当前的资产配比极具性价比。" }<br>
+                <strong>行动处方：</strong>{ "参考决策沙盘中的'红星'点位调整配比，提升新陈代谢效率。" if avg_sharpe < 0.5 else "保持当前的锻炼强度。" }
+            </div>
+        """, unsafe_allow_html=True)
 
-        # File upload section
-        st.subheader("📁 上传数据文件")
-        uploaded_file = st.file_uploader(
-            "上传 CSV 文件 (必须包含: open, high, low, close 列, 可选 volume)",
-            type=['csv'],
-            help="CSV 格式: timestamps/timestamp/date, open, high, low, close, volume(可选)"
-        )
+    # 兼容性收纳原有逻辑
+    with st.expander("🔍 原始数据看板 (Legacy Console)"):
+        st.subheader("基础信息")
+        st.write(data.get("meta", {}))
+        st.subheader("价格数据（清洗后）")
+        st.dataframe(close_sel.tail(20))
+        st.subheader("核心统计指标（年化）")
+        st.dataframe(metrics_df)
 
-        # Data directory files
-        kronos_data_dir = os.path.join(_THIS_DIR, "kronos_data")
-        os.makedirs(kronos_data_dir, exist_ok=True)
-
-        # Show existing data files
-        existing_files = [f for f in os.listdir(kronos_data_dir) if f.endswith('.csv')]
-        if existing_files:
-            st.caption(f"📂 本地数据目录已有文件: {', '.join(existing_files)}")
-            selected_existing = st.selectbox(
-                "或选择已有文件",
-                options=["-- 上传新文件 --"] + existing_files,
-                index=0
-            )
-        else:
-            selected_existing = "-- 上传新文件 --"
-
-        # Load data button
-        df_loaded = None
-        data_source = None
-
-        col_load1, col_load2 = st.columns([1, 1])
-        with col_load1:
-            if uploaded_file is not None:
-                if st.button("📥 加载上传的文件", key="load_uploaded"):
-                    try:
-                        df_loaded = pd.read_csv(uploaded_file)
-                        data_source = f"上传: {uploaded_file.name}"
-                        st.session_state['kronos_df'] = df_loaded
-                        st.session_state['kronos_source'] = data_source
-                        st.success(f"✅ 已加载: {uploaded_file.name}")
-                    except Exception as e:
-                        st.error(f"加载失败: {e}")
-
-        with col_load2:
-            if selected_existing != "-- 上传新文件 --":
-                if st.button("📂 加载本地文件", key="load_existing"):
-                    try:
-                        file_path = os.path.join(kronos_data_dir, selected_existing)
-                        df_loaded = pd.read_csv(file_path)
-                        data_source = f"本地: {selected_existing}"
-                        st.session_state['kronos_df'] = df_loaded
-                        st.session_state['kronos_source'] = data_source
-                        st.success(f"✅ 已加载: {selected_existing}")
-                    except Exception as e:
-                        st.error(f"加载失败: {e}")
-
-        # Process loaded data
-        if 'kronos_df' in st.session_state:
-            df = st.session_state['kronos_df']
-            st.markdown("---")
-            st.subheader("📊 数据预览")
-
-            # Validate and process columns
-            required_cols = ['open', 'high', 'low', 'close']
-            missing_cols = [c for c in required_cols if c not in df.columns]
-
-            if missing_cols:
-                st.error(f"❌ 缺少必需列: {missing_cols}")
-                st.info("CSV 必须包含: open, high, low, close (小写)")
-            else:
-                # Process timestamp
-                if 'timestamps' in df.columns:
-                    df['timestamps'] = pd.to_datetime(df['timestamps'])
-                elif 'timestamp' in df.columns:
-                    df['timestamps'] = pd.to_datetime(df['timestamp'])
-                elif 'date' in df.columns:
-                    df['timestamps'] = pd.to_datetime(df['date'])
-                else:
-                    df['timestamps'] = pd.date_range(start='2024-01-01', periods=len(df), freq='D')
-
-                # Convert to numeric
-                for col in required_cols:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                if 'volume' in df.columns:
-                    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-
-                df = df.dropna()
-
-                # Show data info
-                info_col1, info_col2, info_col3 = st.columns(3)
-                with info_col1:
-                    st.metric("数据行数", len(df))
-                with info_col2:
-                    st.metric("时间范围", f"{df['timestamps'].iloc[0].strftime('%Y-%m-%d')} ~ {df['timestamps'].iloc[-1].strftime('%Y-%m-%d')}")
-                with info_col3:
-                    price_range = f"{df['close'].min():.2f} - {df['close'].max():.2f}"
-                    st.metric("价格区间", price_range)
-
-                st.dataframe(df.tail(10))
-
-                # Kronos prediction settings
-                st.markdown("---")
-                st.subheader("⚙️ Kronos 预测设置")
-
-                cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
-                with cfg_col1:
-                    k_model = st.selectbox(
-                        "模型大小",
-                        options=["kronos-small (推荐)", "kronos-mini (轻量)", "kronos-base (大型)"],
-                        index=0
-                    )
-                    model_key = k_model.split(" (")[0]
-                with cfg_col2:
-                    k_lookback = st.slider("历史窗口 (lookback)", min_value=30, max_value=400, value=120, step=10)
-                with cfg_col3:
-                    k_pred_len = st.slider("预测长度 (天数)", min_value=5, max_value=120, value=30, step=5)
-
-                # Check data sufficiency
-                if len(df) < k_lookback + k_pred_len:
-                    st.warning(f"⚠️ 数据不足: 需要至少 {k_lookback + k_pred_len} 行，当前只有 {len(df)} 行")
-                else:
-                    # Run prediction
-                    if st.button("🚀 运行 Kronos 预测", type="primary", key="run_kronos_tab6"):
-                        if not KRONOS_AVAILABLE:
-                            st.error("Kronos 未安装，无法运行预测")
-                        else:
-                            with st.spinner("Kronos 正在分析历史数据并预测未来走势..."):
-                                try:
-                                    from kronos_model import Kronos, KronosTokenizer, KronosPredictor
-
-                                    model_configs = {
-                                        'kronos-mini': {
-                                            'model_id': 'NeoQuasar/Kronos-mini',
-                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
-                                            'context_length': 2048
-                                        },
-                                        'kronos-small': {
-                                            'model_id': 'NeoQuasar/Kronos-small',
-                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
-                                            'context_length': 512
-                                        },
-                                        'kronos-base': {
-                                            'model_id': 'NeoQuasar/Kronos-base',
-                                            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
-                                            'context_length': 512
-                                        }
-                                    }
-
-                                    config = model_configs.get(model_key, model_configs['kronos-small'])
-
-                                    # Load model
-                                    tokenizer = KronosTokenizer.from_pretrained(config['tokenizer_id'])
-                                    model = Kronos.from_pretrained(config['model_id'])
-                                    predictor = KronosPredictor(model, tokenizer, device='cpu', max_context=config['context_length'])
-
-                                    # Prepare data
-                                    hist_df = df.tail(k_lookback).reset_index(drop=True)
-                                    last_date = hist_df['timestamps'].iloc[-1]
-
-                                    # Calculate future dates - handle edge cases
-                                    if len(hist_df) > 1:
-                                        time_diff = hist_df['timestamps'].iloc[1] - hist_df['timestamps'].iloc[0]
-                                        # Ensure time_diff is not zero
-                                        if time_diff.total_seconds() <= 0:
-                                            time_diff = pd.Timedelta(days=1)
-                                    else:
-                                        time_diff = pd.Timedelta(days=1)
-
-                                    # Convert Timedelta to frequency string for date_range
-                                    if time_diff >= pd.Timedelta(days=1):
-                                        freq_str = f"{int(time_diff.total_seconds() // 86400)}D"
-                                    elif time_diff >= pd.Timedelta(hours=1):
-                                        freq_str = f"{int(time_diff.total_seconds() // 3600)}H"
-                                    elif time_diff >= pd.Timedelta(minutes=1):
-                                        freq_str = f"{int(time_diff.total_seconds() // 60)}min"
-                                    else:
-                                        freq_str = f"{int(time_diff.total_seconds())}S"
-
-                                    future_dates = pd.date_range(start=last_date + time_diff, periods=k_pred_len, freq=freq_str)
-
-                                    # Run prediction
-                                    x_df = hist_df[['open', 'high', 'low', 'close'] + (['volume'] if 'volume' in hist_df.columns else [])]
-                                    x_timestamp = hist_df['timestamps']
-                                    y_timestamp = pd.Series(future_dates, name='timestamps')
-
-                                    pred_df = predictor.predict(
-                                        df=x_df,
-                                        x_timestamp=x_timestamp,
-                                        y_timestamp=y_timestamp,
-                                        pred_len=k_pred_len,
-                                        T=1.0,
-                                        top_p=0.9,
-                                        sample_count=1,
-                                        verbose=True
-                                    )
-
-                                    st.session_state['kronos_prediction'] = {
-                                        'hist_df': hist_df,
-                                        'pred_df': pred_df,
-                                        'future_dates': future_dates,
-                                        'model': model_key
-                                    }
-                                    st.success(f"✅ {model_key} 预测完成！")
-
-                                except Exception as e:
-                                    st.error(f"预测失败: {e}")
-                                    import traceback
-                                    st.code(traceback.format_exc())
-
-                    # Display prediction results
-                    if 'kronos_prediction' in st.session_state:
-                        st.markdown("---")
-                        st.subheader("📈 预测结果")
-
-                        kp = st.session_state['kronos_prediction']
-                        hist = kp['hist_df']
-                        pred = kp['pred_df']
-                        future_dates = kp['future_dates']
-
-                        # Metrics
-                        last_close = hist['close'].iloc[-1]
-                        pred_last_close = pred['close'].iloc[-1]
-                        total_return = (pred_last_close / last_close - 1) * 100
-                        pred_high = pred['high'].max()
-                        pred_low = pred['low'].min()
-
-                        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-                        with m_col1:
-                            st.metric("最新收盘价", f"{last_close:.2f}")
-                        with m_col2:
-                            st.metric(f"预测{k_pred_len}日后", f"{pred_last_close:.2f}", f"{total_return:.1f}%")
-                        with m_col3:
-                            st.metric("预测区间最高", f"{pred_high:.2f}")
-                        with m_col4:
-                            st.metric("预测区间最低", f"{pred_low:.2f}")
-
-                        # Prediction table
-                        st.markdown("**详细预测数据**")
-                        pred_display = pred.copy()
-                        pred_display.index = future_dates[:len(pred)]
-                        st.dataframe(pred_display.round(2))
-
-                        # Simple chart
-                        st.markdown("**价格走势预测**")
-                        chart_data = pd.DataFrame({
-                            '日期': list(hist['timestamps'].tail(30)) + list(future_dates),
-                            '类型': ['历史'] * min(30, len(hist)) + ['预测'] * len(future_dates),
-                            '收盘价': list(hist['close'].tail(min(30, len(hist)))) + list(pred['close'])
-                        })
-
-                        fig_pred = px.line(
-                            chart_data, x='日期', y='收盘价', color='类型',
-                            title=f'Kronos 预测 ({model_key})',
-                            markers=True,
-                            color_discrete_map={'历史': '#1f77b4', '预测': '#ff7f0e'}
-                        )
-                        st.plotly_chart(fig_pred, use_container_width=True)
-
-                        # Download results
-                        csv = pred.to_csv(index=False)
-                        st.download_button(
-                            label="📥 下载预测结果 (CSV)",
-                            data=csv,
-                            file_name=f'kronos_prediction_{model_key}_{k_pred_len}d.csv',
-                            mime='text/csv'
-                        )
-
+    return # End of main
 
 if __name__ == "__main__":
     main()

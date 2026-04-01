@@ -106,6 +106,24 @@ def annual_metrics(returns: pd.DataFrame, trading_days: int = 252) -> pd.DataFra
     return out.sort_values("sharpe_rf0", ascending=False)
 
 
+def get_prob_summary(mu: float, sigma: float, threshold: float = 0.005) -> str:
+    """
+    Step 2: 概率离散化函数编写
+    根据均值和标准差，计算涨跌概率。
+    涨 (>threshold): P(X > threshold)
+    跌 (<-threshold): P(X < -threshold)
+    """
+    from scipy.stats import norm
+
+    if sigma <= 0:
+        return f"涨 (>{threshold:.1%}): -- | 跌 (<-{threshold:.1%}): --"
+
+    p_up = 1 - norm.cdf(threshold, loc=mu, scale=sigma)
+    p_down = norm.cdf(-threshold, loc=mu, scale=sigma)
+
+    return f"涨 (>{threshold:.1%}): {p_up:.1%} | 跌 (<-{threshold:.1%}): {p_down:.1%}"
+
+
 def corr_matrix(returns: pd.DataFrame) -> pd.DataFrame:
     if returns is None or returns.empty:
         return pd.DataFrame()

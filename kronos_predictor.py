@@ -12,11 +12,17 @@ import pandas as pd
 
 warnings.filterwarnings('ignore')
 
-# Add kronos_model to path
+# Ensure the project root is in path
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_KRONOS_DIR = os.path.join(_THIS_DIR, "kronos_model")
-if _KRONOS_DIR not in sys.path:
-    sys.path.insert(0, _KRONOS_DIR)
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
+# Check for local weights - only use local if both the directory exists AND it contains model folders
+_WEIGHTS_DIR = os.path.join(_THIS_DIR, "kronos_weights")
+_USE_LOCAL = os.path.exists(_WEIGHTS_DIR) and (
+    os.path.exists(os.path.join(_WEIGHTS_DIR, "kronos-small")) or 
+    os.path.exists(os.path.join(_WEIGHTS_DIR, "kronos-mini"))
+)
 
 # Import ass1_core functions at module level to avoid circular imports
 try:
@@ -125,31 +131,56 @@ def kronos_forecast(
             "model_info": "Kronos not available"
         }
 
-    # Model mapping
-    model_configs = {
-        'kronos-mini': {
-            'model_id': 'NeoQuasar/Kronos-mini',
-            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
-            'context_length': 2048
-        },
-        'kronos-small': {
-            'model_id': 'NeoQuasar/Kronos-small',
-            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
-            'context_length': 512
-        },
-        'kronos-base': {
-            'model_id': 'NeoQuasar/Kronos-base',
-            'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
-            'context_length': 512
+    # Model mapping - use local paths if available
+    if _USE_LOCAL:
+        model_configs = {
+            'kronos-mini': {
+                'model_path': os.path.join(_WEIGHTS_DIR, 'kronos-mini'),
+                'tokenizer_path': os.path.join(_WEIGHTS_DIR, 'tokenizer-2k'),
+                'context_length': 2048
+            },
+            'kronos-small': {
+                'model_path': os.path.join(_WEIGHTS_DIR, 'kronos-small'),
+                'tokenizer_path': os.path.join(_WEIGHTS_DIR, 'tokenizer-base'),
+                'context_length': 512
+            },
+            'kronos-base': {
+                'model_path': 'NeoQuasar/Kronos-base',  # base not cached locally
+                'tokenizer_path': os.path.join(_WEIGHTS_DIR, 'tokenizer-base'),
+                'context_length': 512
+            }
         }
-    }
+    else:
+        model_configs = {
+            'kronos-mini': {
+                'model_id': 'NeoQuasar/Kronos-mini',
+                'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
+                'context_length': 2048
+            },
+            'kronos-small': {
+                'model_id': 'NeoQuasar/Kronos-small',
+                'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
+                'context_length': 512
+            },
+            'kronos-base': {
+                'model_id': 'NeoQuasar/Kronos-base',
+                'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
+                'context_length': 512
+            }
+        }
 
     config = model_configs.get(model_name, model_configs['kronos-small'])
 
     try:
-        # Load model
-        tokenizer = KronosTokenizer.from_pretrained(config['tokenizer_id'])
-        model = Kronos.from_pretrained(config['model_id'])
+        # Load model from local or HuggingFace
+        if _USE_LOCAL:
+            print(f"Loading Kronos model from local: {config['model_path']}")
+            tokenizer = KronosTokenizer.from_pretrained(config['tokenizer_path'])
+            model = Kronos.from_pretrained(config['model_path'])
+        else:
+            print(f"Downloading Kronos model from HuggingFace...")
+            tokenizer = KronosTokenizer.from_pretrained(config['tokenizer_id'])
+            model = Kronos.from_pretrained(config['model_id'])
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=config['context_length'])
     except Exception as e:
         print(f"Failed to load Kronos model: {e}")

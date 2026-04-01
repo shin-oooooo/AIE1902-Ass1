@@ -433,6 +433,26 @@ def _mu_from_lightgbm_forecast(ret_df: pd.DataFrame, lgb_state: Dict[str, Any], 
     return np.asarray(mu, dtype=float), forecast
 
 
+def _circuit_breaker(lgb_forecast: Dict[str, Any], kronos_forecast: Dict[str, Any], threshold: float = 0.05) -> int:
+    """
+    Step 3: 熔断逻辑实现
+    计算 LightGBM 与 Kronos 信号的一致性。
+    0: 绿, 1: 黄, 2: 红
+    """
+    if not lgb_forecast.get("available") or not kronos_forecast.get("available"):
+        return 1 # 数据不足，黄灯
+    
+    lgb_mu = lgb_forecast.get("mu_mean", 0)
+    kronos_mu = kronos_forecast.get("mu_mean", 0)
+    
+    # 方向相反
+    if lgb_mu * kronos_mu < 0:
+        if abs(lgb_mu - kronos_mu) > threshold:
+            return 2 # 红灯：方向相反且差异巨大
+        return 1 # 黄灯：方向相反但差异在阈值内
+    
+    return 0 # 绿灯：方向一致
+
 def run_models(json_path: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
     bundle = load_bundle(json_path)
     out_dir = out_dir or os.path.dirname(os.path.abspath(json_path))
